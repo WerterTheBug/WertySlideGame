@@ -170,7 +170,7 @@ class Game {
 
         this.menuButtons = [
             new Button("START", cx, startY, btnW, btnH, () => this.startGame(), "primary"),
-            new Button("PRACTICE", cx, startY + spacing, btnW, btnH, () => this.startPractice(), "outline"),
+            new Button("PRACTICE", cx, startY + spacing, btnW, btnH, () => this.startPractice(), "red_black"),
             new Button("SHOP", cx, startY + spacing * 2, btnW, btnH, () => this.openShop(), "outline"),
             new Button("INFO", cx, startY + spacing * 3, btnW, btnH, () => { this.state = STATE_INFO; }, "outline")
         ];
@@ -939,6 +939,10 @@ class Game {
                     btn.color = [60, 100, 40];
                     btn.hoverColor = [80, 130, 60];
                     btn.textColor = [150, 200, 100];
+                } else if (btn.style === "red_black") {
+                    btn.color = [0, 0, 0];
+                    btn.hoverColor = [30, 30, 30];
+                    btn.textColor = [255, 0, 0];
                 } else if (btn.style === "outline") {
                     btn.textColor = [100, 150, 255];
                 } else {
