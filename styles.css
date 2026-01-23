@@ -1,0 +1,34 @@
+/* =====================
+   GLOBAL STYLES
+   ===================== */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    width: 100vw;
+    background-color: #0a0a0a;
+    font-family: Arial, sans-serif;
+    overflow: hidden;
+}
+
+#gameContainer {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    height: 100%;
+    background-color: #0a0a0a;
+}
+
+#gameCanvas {
+    border: 2px solid #333;
+    image-rendering: pixelated;
+    display: block;
+}
