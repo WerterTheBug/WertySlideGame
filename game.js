@@ -51,6 +51,11 @@ class Game {
         this.pausedPlayerGridPos = null;
         this.pausedPlayerPixelPos = null;
         this.pausedLavaCells = null;
+        this.practiceGhostTrace = [];
+        this.lavaFreezePickups = [];
+        this.lavaFreezePickupSpawns = [];
+        this.lavaFrozenUntil = 0;
+        this.pauseStartedAt = null;
 
         this.setupInput();
         this.createMenuUI();
@@ -88,14 +93,20 @@ class Game {
                 this.startGame();
             } else if (this.state === STATE_INFO && (e.key === ' ' || e.key === 'Escape')) {
                 this.state = STATE_MENU;
+                this.clearPracticeGhostTrace();
             } else if (this.state === STATE_GAMEOVER && e.key === ' ') {
                 this.state = STATE_MENU;
+                this.clearPracticeGhostTrace();
+            } else if (this.state === STATE_GAMEOVER && (e.key === 'r' || e.key === 'R') && e.shiftKey) {
+                // Reroll level: regenerate maze, enter practice mode
+                this.rerollLevel();
             } else if (this.state === STATE_GAMEOVER && (e.key === 'r' || e.key === 'R')) {
                 this.restartLevel();
             } else if (this.state === STATE_PLAYING && e.key === 'Escape') {
                 if (this.isPaused) {
                     this.isPaused = false;
                     this.state = STATE_MENU;
+                    this.clearPracticeGhostTrace();
                 }
             } else if (this.state === STATE_PLAYING && e.key === ' ') {
                 e.preventDefault();
@@ -118,6 +129,11 @@ class Game {
                         this.playerGridPos = [targetR, targetC];
                         this.targetPixelPos = [targetC * this.tileW, targetR * this.tileH];
                         this.isMoving = true;
+                        if (this.pauseStartedAt) {
+                            const pausedMs = Date.now() - this.pauseStartedAt;
+                            this.lavaFrozenUntil += pausedMs;
+                            this.pauseStartedAt = null;
+                        }
                         this.lastMoveDir = [dr, dc];
                     }
                 }
@@ -132,6 +148,7 @@ class Game {
                     e.preventDefault();
                     this.currentMoveVelocity = this.dataManager.data.equipped_anim === 'heavy' ? 5 : this.moveSpeed;
                     this.moveStartPos = [...this.playerPixelPos];
+                    this._appendPracticeGhostPointFromPixel(this.moveStartPos);
 
                     const [targetR, targetC] = this.getTargetSlidePos(dr, dc);
                     if (targetR !== this.playerGridPos[0] || targetC !== this.playerGridPos[1]) {
@@ -151,6 +168,9 @@ class Game {
             this.pausedPlayerGridPos = [...this.playerGridPos];
             this.pausedPlayerPixelPos = [...this.playerPixelPos];
             this.pausedLavaCells = new Set(this.lavaCells);
+            if (this.practice_mode) {
+                this.clearPracticeGhostTrace();
+            }
         } else {
             this.isPaused = false;
             this.playerGridPos = [...this.pausedPlayerGridPos];
@@ -160,6 +180,20 @@ class Game {
             this.pausedPlayerPixelPos = null;
             this.pausedLavaCells = null;
         }
+    }
+
+    _appendPracticeGhostPointFromPixel(pxPos) {
+        if (!this.practice_mode || !this.isPaused) return;
+        const cx = pxPos[0] + this.tileW / 2;
+        const cy = pxPos[1] + this.tileH / 2;
+        const last = this.practiceGhostTrace[this.practiceGhostTrace.length - 1];
+        if (!last || last[0] !== cx || last[1] !== cy) {
+            this.practiceGhostTrace.push([cx, cy]);
+        }
+    }
+
+    clearPracticeGhostTrace() {
+        this.practiceGhostTrace = [];
     }
 
     createMenuUI() {
@@ -176,7 +210,7 @@ class Game {
         ];
         
         this.infoButtons = [
-            new Button("BACK", WINDOW_WIDTH / 2 - 100, WINDOW_HEIGHT - 80, 200, 50, () => { this.state = STATE_MENU; }, "primary")
+            new Button("BACK", WINDOW_WIDTH / 2 - 100, WINDOW_HEIGHT - 80, 200, 50, () => { this.state = STATE_MENU; this.clearPracticeGhostTrace(); }, "primary")
         ];
     }
 
@@ -199,6 +233,7 @@ class Game {
     openShop() {
         this.state = STATE_SHOP;
         this.createShopUI();
+        this.clearPracticeGhostTrace();
     }
 
     quitGame() {
@@ -223,6 +258,17 @@ class Game {
         this.lavaCells = new Set();
         this.lavaTimer = 0;
         this.levelFrameCount = 0;
+        this.state = STATE_PLAYING;
+        this.clearPracticeGhostTrace();
+        this.lavaFrozenUntil = 0;
+        this.lavaFreezePickups = this.lavaFreezePickupSpawns.map(p => p ? [...p] : null).filter(p => p);
+    }
+
+    rerollLevel() {
+        // Practice mode, regenerate fresh maze for same level
+        this.practice_mode = true;
+        this.gameStartTime = Date.now();
+        this.initLevel();
         this.state = STATE_PLAYING;
     }
 
@@ -258,6 +304,68 @@ class Game {
 
         const startInterval = Math.max(2.0, 25.0 - this.level * 1.0);
         this.currentLavaInterval = startInterval;
+        this.clearPracticeGhostTrace();
+
+        this.lavaFrozenUntil = 0;
+        this.spawnLavaFreezePickups();
+        this.lavaFreezePickups = this.lavaFreezePickupSpawns.map(p => p ? [...p] : null).filter(p => p);
+    }
+
+    spawnLavaFreezePickups() {
+        const numPickups = Math.floor((this.level - 1) / 20) + 1;
+        this.lavaFreezePickupSpawns = [];
+        const reachable = this.getReachableOpenCells();
+        const candidates = reachable.filter(([r, c]) => {
+            if (r === this.mazeGen.start[0] && c === this.mazeGen.start[1]) return false;
+            if (r === this.mazeGen.end[0] && c === this.mazeGen.end[1]) return false;
+            return true;
+        });
+        if (candidates.length === 0) return;
+        for (let i = 0; i < numPickups && candidates.length > 0; i++) {
+            const idx = Math.floor(Math.random() * candidates.length);
+            this.lavaFreezePickupSpawns.push(candidates[idx]);
+            candidates.splice(idx, 1);
+        }
+    }
+
+    getReachableOpenCells() {
+        const rows = this.mazeGen.rows;
+        const cols = this.mazeGen.cols;
+        const visited = Array.from({length: rows}, () => Array(cols).fill(false));
+        const q = [];
+        const result = [];
+        q.push(this.mazeGen.start);
+        visited[this.mazeGen.start[0]][this.mazeGen.start[1]] = true;
+
+        const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+        while (q.length) {
+            const [r, c] = q.shift();
+            if (this.grid[r][c] === 0) {
+                result.push([r, c]);
+            }
+            for (const [dr, dc] of dirs) {
+                const nr = r + dr, nc = c + dc;
+                if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
+                if (visited[nr][nc]) continue;
+                if (this.grid[nr][nc] === 1) continue;
+                visited[nr][nc] = true;
+                q.push([nr, nc]);
+            }
+        }
+        return result;
+    }
+
+    isLavaFrozen() {
+        return Date.now() < this.lavaFrozenUntil;
+    }
+
+    collectLavaFreeze(index) {
+        const now = Date.now();
+        const addMs = 100 * this.level;
+        const base = Math.max(now, this.lavaFrozenUntil);
+        this.lavaFrozenUntil = base + addMs;
+        this.lavaFreezePickups[index] = null;
+        this.lavaFreezePickups = this.lavaFreezePickups.filter(p => p);
     }
 
     resetAnimations() {
@@ -279,6 +387,12 @@ class Game {
             const nextC = c + dc;
             if (nextR >= 0 && nextR < this.mazeGen.rows && nextC >= 0 && nextC < this.mazeGen.cols) {
                 if (this.grid[nextR][nextC] === 1) break;
+                for (const pickup of this.lavaFreezePickups) {
+                    if (pickup && pickup[0] === nextR && pickup[1] === nextC) {
+                        [r, c] = [nextR, nextC];
+                        return [r, c];
+                    }
+                }
                 [r, c] = [nextR, nextC];
                 if (r === this.mazeGen.end[0] && c === this.mazeGen.end[1]) break;
             } else break;
@@ -374,12 +488,18 @@ class Game {
         if (dist <= moveSpeed) {
             this.playerPixelPos = [targetX, targetY];
             this.isMoving = false;
+            if (this.practice_mode && this.isPaused) {
+                this._appendPracticeGhostPointFromPixel(this.playerPixelPos);
+            }
             this.triggerImpact();
         } else {
             const moveX = (dx / dist) * moveSpeed;
             const moveY = (dy / dist) * moveSpeed;
             this.playerPixelPos[0] += moveX;
             this.playerPixelPos[1] += moveY;
+            if (this.practice_mode && this.isPaused) {
+                this._appendPracticeGhostPointFromPixel(this.playerPixelPos);
+            }
         }
     }
 
@@ -487,6 +607,7 @@ class Game {
 
     updateLava() {
         if (this.isPaused) return;
+        if (this.isLavaFrozen()) return;
         if (!this.hasStartedMoving) return;
         this.levelFrameCount++;
         if (this.levelFrameCount < this.lavaStartDelay) return;
@@ -522,6 +643,12 @@ class Game {
         if (this.isPaused) return;
         
         const key = `${this.playerGridPos[0]},${this.playerGridPos[1]}`;
+        for (let i = 0; i < this.lavaFreezePickups.length; i++) {
+            if (this.lavaFreezePickups[i] && this.lavaFreezePickups[i][0] === this.playerGridPos[0] && this.lavaFreezePickups[i][1] === this.playerGridPos[1]) {
+                this.collectLavaFreeze(i);
+            }
+        }
+
         if (this.lavaCells.has(key)) {
             if (this.practice_mode) {
                 this.dataManager.data.practice_deaths = (this.dataManager.data.practice_deaths || 0) + 1;
@@ -544,7 +671,7 @@ class Game {
         const panelRect = {x: 100, y: 80, w: WINDOW_WIDTH - 200, h: WINDOW_HEIGHT - 160};
 
         this.shopButtons.push(new Button("BACK", panelRect.x + 20, panelRect.y + 20, 80, 40,
-            () => { this.state = STATE_MENU; }, "outline"));
+            () => { this.state = STATE_MENU; this.clearPracticeGhostTrace(); }, "outline"));
 
         const tabs = [["SKINS", "skins"], ["TRAILS", "trails"], ["MOVES", "moves"], ["THEMES", "level_skins"]];
         let tx = panelRect.x + 150;
@@ -981,7 +1108,7 @@ class Game {
         } else if (this.state === STATE_GAMEOVER) {
             this.drawTextCentered("GAME OVER", 80, cLava, -50);
             this.drawTextCentered(`Level Reached: ${this.level}`, 18, cText, 20);
-            this.drawTextCentered("Press SPACE for Menu or R to Restart", 18, cBorder, 60);
+            this.drawTextCentered("SPACE: Menu | R: Restart | SHIFT+R: Reroll", 18, cBorder, 60);
         } else if (this.state === STATE_INFO) {
             this.ctx.fillStyle = `rgb(${cBg.join(',')})`;
             this.ctx.fillRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
@@ -1083,8 +1210,26 @@ Press SPACE or ESC to go back`;
                     }
 
                     if (this.lavaCells.has(`${r},${c}`)) {
-                        this.ctx.fillStyle = `rgb(${cLava.join(',')})`;
-                        this.ctx.fillRect(x, y, this.tileW, this.tileH);
+                         let lavColor = cLava;
+                         if (this.isLavaFrozen()) {
+                             const flashState = Math.floor(Date.now() / 100) % 2;
+                             if (flashState === 1) {
+                                 lavColor = [255 - cLava[0], 255 - cLava[1], 255 - cLava[2]];
+                             }
+                         }
+                         this.ctx.fillStyle = `rgb(${lavColor.join(',')})`;
+                         this.ctx.fillRect(x, y, this.tileW, this.tileH);
+                    }
+
+                    for (const pickup of this.lavaFreezePickups) {
+                         if (pickup && pickup[0] === r && pickup[1] === c) {
+                             this.ctx.fillStyle = 'rgb(120, 200, 255)';
+                             this.ctx.fillRect(x + this.tileW * 0.2, y + this.tileH * 0.2, this.tileW * 0.6, this.tileH * 0.6);
+                             this.ctx.strokeStyle = 'rgb(255, 255, 255)';
+                             this.ctx.lineWidth = 2;
+                             this.ctx.strokeRect(x + this.tileW * 0.2, y + this.tileH * 0.2, this.tileW * 0.6, this.tileH * 0.6);
+                             break;
+                         }
                     }
 
                     if (r === this.mazeGen.end[0] && c === this.mazeGen.end[1]) {
@@ -1102,6 +1247,17 @@ Press SPACE or ESC to go back`;
                 p.draw(this.ctx, sx, sy);
             }
 
+            if (this.practiceGhostTrace.length >= 2) {
+                this.ctx.strokeStyle = 'rgb(255, 0, 0)';
+                this.ctx.lineWidth = 3;
+                this.ctx.beginPath();
+                this.ctx.moveTo(this.practiceGhostTrace[0][0] + sx, this.practiceGhostTrace[0][1] + sy);
+                for (let i = 1; i < this.practiceGhostTrace.length; i++) {
+                    this.ctx.lineTo(this.practiceGhostTrace[i][0] + sx, this.practiceGhostTrace[i][1] + sy);
+                }
+                this.ctx.stroke();
+            }
+
             this.drawPlayer(sx, sy);
 
             if (quirk === 'scanlines') {
@@ -1117,11 +1273,17 @@ Press SPACE or ESC to go back`;
                 this.drawTextCentered("PLAN ROUTE", 40, [0, 50, 150], -250);
             } else if (this.levelFrameCount < this.lavaStartDelay) {
                 const pct = (this.lavaStartDelay - this.levelFrameCount) / this.lavaStartDelay;
-                const barW = 400;
                 this.ctx.fillStyle = 'rgb(100, 100, 100)';
-                this.ctx.fillRect(WINDOW_WIDTH / 2 - barW / 2, 30, barW, 10);
-                this.ctx.fillStyle = `rgb(${cLava.join(',')})`;
-                this.ctx.fillRect(WINDOW_WIDTH / 2 - barW / 2, 30, barW * pct, 10);
+                this.ctx.fillRect(WINDOW_WIDTH / 2 - 200, 30, 400, 10);
+                let barColor = cLava;
+                if (this.isLavaFrozen()) {
+                    const flashState = Math.floor(Date.now() / 100) % 2;
+                    if (flashState === 1) {
+                        barColor = [255 - cLava[0], 255 - cLava[1], 255 - cLava[2]];
+                    }
+                }
+                this.ctx.fillStyle = `rgb(${barColor.join(',')})`;
+                this.ctx.fillRect(WINDOW_WIDTH / 2 - 200, 30, 400 * pct, 10);
             } else {
                 this.drawTextCentered("RUN!", 40, [180, 50, 50], -250);
             }
@@ -1132,6 +1294,18 @@ Press SPACE or ESC to go back`;
             this.ctx.textAlign = 'left';
             this.ctx.textBaseline = 'top';
             this.ctx.fillText(String(this.level), 20, 20);
+
+            // Lava freeze timer indicator
+            const freezeRemaining = Math.max(0, this.lavaFrozenUntil - Date.now());
+            if (freezeRemaining > 0) {
+                const seconds = (freezeRemaining / 1000).toFixed(1);
+                this.ctx.fillStyle = `rgb(${cLava.join(',')})`;
+                this.ctx.font = 'bold 18px Arial';
+                this.ctx.textAlign = 'right';
+                this.ctx.textBaseline = 'top';
+                this.ctx.fillText(`Lava Frozen: ${seconds}s`, WINDOW_WIDTH - 20, 20);
+                this.ctx.textAlign = 'left';
+            }
 
             // Draw practice mode indicator
             if (this.practice_mode) {
