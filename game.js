@@ -1128,6 +1128,7 @@ Collect cosmetics and unlock high-tier skins
 Press R to restart a level and go into practice mode
 Press space to pause the game
 In practice mode, pausing disables lava and allows you to map out the maze
+Collect blue pickups to freeze lava for time proportional to your current level
 Press SPACE or ESC to go back`;
             this.drawMultilineTextCentered(infoText, 12, cText, 0, 20);
 
