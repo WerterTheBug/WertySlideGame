@@ -168,6 +168,7 @@ class Game {
             this.pausedPlayerGridPos = [...this.playerGridPos];
             this.pausedPlayerPixelPos = [...this.playerPixelPos];
             this.pausedLavaCells = new Set(this.lavaCells);
+            this.pauseStartedAt = Date.now();
             if (this.practice_mode) {
                 this.clearPracticeGhostTrace();
             }
@@ -179,6 +180,11 @@ class Game {
             this.pausedPlayerGridPos = null;
             this.pausedPlayerPixelPos = null;
             this.pausedLavaCells = null;
+            if (this.pauseStartedAt) {
+                const pausedMs = Date.now() - this.pauseStartedAt;
+                this.lavaFrozenUntil += pausedMs;
+                this.pauseStartedAt = null;
+            }
         }
     }
 
@@ -1297,7 +1303,8 @@ Press SPACE or ESC to go back`;
             this.ctx.fillText(String(this.level), 20, 20);
 
             // Lava freeze timer indicator
-            const freezeRemaining = Math.max(0, this.lavaFrozenUntil - Date.now());
+            const currentTime = this.isPaused && this.pauseStartedAt ? this.pauseStartedAt : Date.now();
+            const freezeRemaining = Math.max(0, this.lavaFrozenUntil - currentTime);
             if (freezeRemaining > 0) {
                 const seconds = (freezeRemaining / 1000).toFixed(1);
                 this.ctx.fillStyle = `rgb(${cLava.join(',')})`;
