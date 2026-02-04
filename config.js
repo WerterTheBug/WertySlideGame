@@ -8,6 +8,7 @@ const FPS = 60;
 const STATE_MENU = "menu";
 const STATE_SHOP = "shop";
 const STATE_INFO = "info";
+const STATE_MISSIONS = "missions";
 const STATE_PLAYING = "playing";
 const STATE_GAMEOVER = "gameover";
 

@@ -8,6 +8,9 @@ class Game {
         this.ctx = this.canvas.getContext('2d');
        
         this.dataManager = new DataManager();
+        if (this.dataManager.resetNotice) {
+            alert(this.dataManager.resetNotice);
+        }
        
         this.baseCols = 21;
         this.baseRows = 15;
@@ -42,6 +45,25 @@ class Game {
         this.shopTab = "skins";
         this.menuButtons = [];
         this.shopButtons = [];
+        this.missionButtons = [];
+        this.missions = [];
+        this.missionTemplates = this.buildMissionTemplates();
+        this.missionsTab = "missions";
+        this.boostButtons = [];
+        this.boostTemplates = this.buildBoostTemplates();
+        this.boosts = Array.isArray(this.dataManager.data.boosts) ? this.dataManager.data.boosts : [];
+        this.equippedBoosts = Array.isArray(this.dataManager.data.equipped_boosts) ? this.dataManager.data.equipped_boosts : [];
+        this.gachaSpend = 10;
+        this.isDraggingGachaSlider = false;
+        this.gachaAnim = {
+            active: false,
+            startAt: 0,
+            revealAt: 0,
+            endAt: 0,
+            revealed: false,
+            boostList: [],
+            spend: 0
+        };
 
         this.shakeOffset = [0, 0];
         this.lastMoveDir = [0, 0];
@@ -59,6 +81,8 @@ class Game {
 
         this.setupInput();
         this.createMenuUI();
+        this.initMissions();
+        this.initBoosts();
         this.initLevel();
        
         this.lastTime = Date.now();
@@ -70,9 +94,20 @@ class Game {
             const rect = this.canvas.getBoundingClientRect();
             const x = e.clientX - rect.left;
             const y = e.clientY - rect.top;
+
+            if (this.isDraggingGachaSlider && this.state === STATE_MISSIONS && this.missionsTab === "gacha" && !this.gachaAnim.active) {
+                this.updateGachaSliderFromX(x);
+            }
            
-            if ([STATE_MENU, STATE_SHOP, STATE_INFO, STATE_GAMEOVER].includes(this.state)) {
-                const btnList = this.state === STATE_MENU ? this.menuButtons : (this.state === STATE_INFO ? this.infoButtons : this.shopButtons);
+            if ([STATE_MENU, STATE_SHOP, STATE_INFO, STATE_MISSIONS, STATE_GAMEOVER].includes(this.state)) {
+                if (this.state === STATE_MISSIONS && this.gachaAnim.active) return;
+                const btnList = this.state === STATE_MENU
+                    ? this.menuButtons
+                    : (this.state === STATE_INFO
+                        ? this.infoButtons
+                        : (this.state === STATE_MISSIONS
+                            ? this.missionButtons
+                            : this.shopButtons));
                 btnList.forEach(btn => btn.checkHover(x, y));
             }
         });
@@ -82,16 +117,41 @@ class Game {
             const x = e.clientX - rect.left;
             const y = e.clientY - rect.top;
            
-            if ([STATE_MENU, STATE_SHOP, STATE_INFO, STATE_GAMEOVER].includes(this.state)) {
-                const btnList = this.state === STATE_MENU ? this.menuButtons : (this.state === STATE_INFO ? this.infoButtons : this.shopButtons);
+            if ([STATE_MENU, STATE_SHOP, STATE_INFO, STATE_MISSIONS, STATE_GAMEOVER].includes(this.state)) {
+                const btnList = this.state === STATE_MENU
+                    ? this.menuButtons
+                    : (this.state === STATE_INFO
+                        ? this.infoButtons
+                        : (this.state === STATE_MISSIONS
+                            ? this.missionButtons
+                            : this.shopButtons));
                 btnList.forEach(btn => btn.checkClick(x, y));
             }
+        });
+
+        this.canvas.addEventListener('mousedown', (e) => {
+            if (this.state !== STATE_MISSIONS || this.missionsTab !== "gacha" || this.gachaAnim.active) return;
+            const rect = this.canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            const slider = this.getGachaSliderRect();
+            if (x >= slider.x && x <= slider.x + slider.w && y >= slider.y - 8 && y <= slider.y + slider.h + 8) {
+                this.isDraggingGachaSlider = true;
+                this.updateGachaSliderFromX(x);
+            }
+        });
+
+        this.canvas.addEventListener('mouseup', () => {
+            this.isDraggingGachaSlider = false;
         });
 
         document.addEventListener('keydown', (e) => {
             if (this.state === STATE_MENU && e.key === ' ') {
                 this.startGame();
             } else if (this.state === STATE_INFO && (e.key === ' ' || e.key === 'Escape')) {
+                this.state = STATE_MENU;
+                this.clearPracticeGhostTrace();
+            } else if (this.state === STATE_MISSIONS && (e.key === ' ' || e.key === 'Escape')) {
                 this.state = STATE_MENU;
                 this.clearPracticeGhostTrace();
             } else if (this.state === STATE_GAMEOVER && e.key === ' ') {
@@ -209,6 +269,7 @@ class Game {
         const spacing = 60;
 
         this.menuButtons = [
+            new Button("🎟️", 20, 20, 48, 48, () => this.openMissions(), "outline"),
             new Button("START", cx, startY, btnW, btnH, () => this.startGame(), "primary"),
             new Button("PRACTICE", cx, startY + spacing, btnW, btnH, () => this.startPractice(), "red_black"),
             new Button("SHOP", cx, startY + spacing * 2, btnW, btnH, () => this.openShop(), "outline"),
@@ -240,6 +301,521 @@ class Game {
         this.state = STATE_SHOP;
         this.createShopUI();
         this.clearPracticeGhostTrace();
+    }
+
+    openMissions() {
+        this.state = STATE_MISSIONS;
+        if (!this.missionsTab) this.missionsTab = "missions";
+        this.createMissionUI();
+        this.clearPracticeGhostTrace();
+    }
+
+    buildMissionTemplates() {
+        return [
+            {
+                type: "complete_levels",
+                title: "Level Climber",
+                difficultyTargets: {easy: [2, 4], medium: [5, 7], hard: [8, 12], epic: [13, 18]},
+                description: (t) => `Complete ${t} levels`,
+                rewardFactor: (t) => t * 2
+            },
+            {
+                type: "reach_level",
+                title: "New Heights",
+                difficultyTargets: {easy: [5, 8], medium: [10, 14], hard: [16, 22], epic: [25, 35]},
+                description: (t) => `Reach level ${t}`,
+                rewardFactor: (t) => t
+            },
+            {
+                type: "collect_freeze",
+                title: "Ice Collector",
+                difficultyTargets: {easy: [1, 2], medium: [3, 5], hard: [6, 8], epic: [9, 12]},
+                description: (t) => `Collect ${t} freeze pickups`,
+                rewardFactor: (t) => t * 3
+            },
+            {
+                type: "slide_moves",
+                title: "Slide Master",
+                difficultyTargets: {easy: [10, 20], medium: [30, 50], hard: [60, 100], epic: [120, 180]},
+                description: (t) => `Make ${t} slides`,
+                rewardFactor: (t) => Math.round(t / 4)
+            },
+            {
+                type: "play_time",
+                title: "Time On Ice",
+                difficultyTargets: {easy: [60, 120], medium: [180, 300], hard: [420, 600], epic: [720, 900]},
+                description: (t) => `Play for ${t} seconds`,
+                rewardFactor: (t) => Math.round(t / 30)
+            },
+            {
+                type: "practice_levels",
+                title: "Practice Pays",
+                difficultyTargets: {easy: [2, 3], medium: [4, 6], hard: [7, 10], epic: [12, 16]},
+                description: (t) => `Complete ${t} practice levels`,
+                rewardFactor: (t) => t * 2
+            }
+        ];
+    }
+
+    initMissions() {
+        const saved = this.dataManager.data.missions;
+        if (Array.isArray(saved) && saved.length) {
+            this.missions = saved.slice(0, 3);
+            while (this.missions.length < 3) {
+                const typesInUse = this.missions.map(m => m.type);
+                this.missions.push(this.generateMission(typesInUse));
+            }
+            this.saveMissions();
+        } else {
+            this.missions = this.generateMissionSet(3);
+            this.saveMissions();
+        }
+    }
+
+    buildBoostTemplates() {
+        return {
+            lava_slow: {
+                name: "Lava Slow",
+                description: (lvl) => `Lava spreads slower (Lv ${lvl})`
+            },
+            lava_delay: {
+                name: "Lava Delay",
+                description: (lvl) => `Longer lava start (Lv ${lvl})`
+            },
+            freeze_count: {
+                name: "Extra Freezes",
+                description: (lvl) => `More freeze pickups (Lv ${lvl})`
+            },
+            freeze_duration: {
+                name: "Freeze Time",
+                description: (lvl) => `Longer freeze time (Lv ${lvl})`
+            }
+        };
+    }
+
+    initBoosts() {
+        if (!Array.isArray(this.boosts)) this.boosts = [];
+        if (!Array.isArray(this.equippedBoosts)) this.equippedBoosts = [];
+        this.equippedBoosts = this.equippedBoosts.filter(id => this.boosts.some(b => b.id === id));
+        this.saveBoosts();
+    }
+
+    saveBoosts() {
+        this.dataManager.data.boosts = this.boosts;
+        this.dataManager.data.equipped_boosts = this.equippedBoosts;
+        this.dataManager.save();
+    }
+
+    getBoostEffects() {
+        const effects = {
+            lavaIntervalMultiplier: 1,
+            lavaDelayBonus: 0,
+            freezeCountBonus: 0,
+            freezeDurationMultiplier: 1
+        };
+        for (const id of this.equippedBoosts) {
+            const boost = this.boosts.find(b => b.id === id);
+            if (!boost) continue;
+            const lvl = boost.level || 1;
+            if (boost.type === "lava_slow") {
+                effects.lavaIntervalMultiplier += 0.08 * lvl;
+            } else if (boost.type === "lava_delay") {
+                effects.lavaDelayBonus += 15 * lvl;
+            } else if (boost.type === "freeze_count") {
+                effects.freezeCountBonus += Math.max(1, Math.floor(lvl / 2));
+            } else if (boost.type === "freeze_duration") {
+                effects.freezeDurationMultiplier += 0.12 * lvl;
+            }
+        }
+        return effects;
+    }
+
+    getBoostName(boost) {
+        const template = this.boostTemplates[boost.type];
+        const base = template ? template.name : "Boost";
+        return `${base} Lv.${boost.level}`;
+    }
+
+    getBoostDescription(boost) {
+        const template = this.boostTemplates[boost.type];
+        if (!template) return `Lv ${boost.level}`;
+        return template.description(boost.level);
+    }
+
+    getGachaSliderRect() {
+        const panel = {x: 40, y: 40, w: WINDOW_WIDTH - 80, h: WINDOW_HEIGHT - 80};
+        return {x: panel.x + 60, y: panel.y + 150, w: panel.w - 120, h: 10};
+    }
+
+    updateGachaSliderFromX(x) {
+        const slider = this.getGachaSliderRect();
+        const minValue = 1;
+        const maxValue = Math.max(1, this.dataManager.data.tickets || 0);
+        const pct = Math.max(0, Math.min(1, (x - slider.x) / slider.w));
+        const value = Math.round(minValue + pct * (maxValue - minValue));
+        this.gachaSpend = Math.max(0, Math.min(value, maxValue));
+    }
+
+    spinGacha(amount) {
+        const tickets = this.dataManager.data.tickets || 0;
+        const spend = Math.max(0, Math.min(amount, tickets));
+        if (spend <= 0 || this.gachaAnim.active) return;
+        this.dataManager.data.tickets = tickets - spend;
+        this.dataManager.save();
+
+        if (this.dataManager.data.tickets <= 0) {
+            this.gachaSpend = 0;
+        } else {
+            this.gachaSpend = Math.min(this.gachaSpend, this.dataManager.data.tickets);
+        }
+
+        const boostList = this.rollGachaBoosts(spend);
+        this.startGachaAnimation(spend, boostList);
+    }
+
+    startGachaAnimation(spend, boostList) {
+        const now = Date.now();
+        this.gachaAnim = {
+            active: true,
+            startAt: now,
+            revealAt: now + 900,
+            endAt: now + 2300,
+            revealed: false,
+            boostList: Array.isArray(boostList) ? boostList : [],
+            spend
+        };
+    }
+
+    updateGachaAnimation() {
+        if (!this.gachaAnim.active) return;
+        const now = Date.now();
+        if (!this.gachaAnim.revealed && now >= this.gachaAnim.revealAt) {
+            this.gachaAnim.revealed = true;
+            if (this.gachaAnim.boostList.length) {
+                for (const boost of this.gachaAnim.boostList) {
+                    this.addBoost(boost);
+                }
+                this.saveBoosts();
+                this.createMissionUI();
+            }
+        }
+        if (now >= this.gachaAnim.endAt) {
+            this.gachaAnim.active = false;
+            this.gachaAnim.boostList = [];
+            this.gachaAnim.spend = 0;
+            this.gachaAnim.revealed = false;
+        }
+    }
+
+    getBoostSellValue(level) {
+        return Math.max(2, Math.round(3 + (level || 1) * 4));
+    }
+
+    getGachaBoostProbabilities(spend) {
+        const power = Math.min(1, Math.log10(spend + 1) / 2);
+        const thresholds = [0.55, 0.82, 0.94, 0.985];
+        const bonus = power * 0.25;
+        const adj = thresholds.map(t => Math.max(0.15, t - bonus));
+
+        const p1 = Math.max(0, Math.min(1, adj[0]));
+        const p2 = Math.max(0, Math.min(1, adj[1] - adj[0]));
+        const p3 = Math.max(0, Math.min(1, adj[2] - adj[1]));
+        const p4 = Math.max(0, Math.min(1, adj[3] - adj[2]));
+        const p5 = Math.max(0, 1 - adj[3]);
+        return [p1, p2, p3, p4, p5];
+    }
+
+    getExpectedGachaBoostValue(spend) {
+        const probs = this.getGachaBoostProbabilities(spend);
+        const levels = [1, 2, 3, 4, 5];
+        let expected = 0;
+        for (let i = 0; i < levels.length; i++) {
+            expected += probs[i] * this.getBoostSellValue(levels[i]);
+        }
+        return expected;
+    }
+
+    getGachaTargetReturnRatio(spend) {
+        const safeSpend = Math.max(0, spend);
+        const ratio = 1 - (10 / (safeSpend + 10));
+        return Math.max(0, Math.min(0.999, ratio));
+    }
+
+    rollGachaBoosts(spend) {
+        const expectedBoostValue = this.getExpectedGachaBoostValue(spend);
+        if (expectedBoostValue <= 0) return [];
+
+        const targetRatio = this.getGachaTargetReturnRatio(spend);
+        const expectedRolls = (targetRatio * spend) / expectedBoostValue;
+        const rolls = Math.floor(expectedRolls);
+        const bonusChance = expectedRolls - rolls;
+        const totalRolls = rolls + (Math.random() < bonusChance ? 1 : 0);
+
+        if (totalRolls <= 0) return [];
+
+        const types = Object.keys(this.boostTemplates);
+        const boosts = [];
+        for (let i = 0; i < totalRolls; i++) {
+            const level = this.getGachaBoostLevel(spend);
+            const type = types[Math.floor(Math.random() * types.length)];
+            boosts.push({type, level});
+        }
+        return boosts;
+    }
+
+    getGachaBoostLevel(spend) {
+        const power = Math.min(1, Math.log10(spend + 1) / 2);
+        const roll = Math.random();
+        const thresholds = [0.55, 0.82, 0.94, 0.985];
+        const bonus = power * 0.25;
+        const adj = thresholds.map(t => Math.max(0.15, t - bonus));
+        if (roll < adj[0]) return 1;
+        if (roll < adj[1]) return 2;
+        if (roll < adj[2]) return 3;
+        if (roll < adj[3]) return 4;
+        return 5;
+    }
+
+    addBoost({type, level}) {
+        this.boosts.push({
+            id: `${Date.now()}_${Math.floor(Math.random() * 100000)}`,
+            type,
+            level: Math.max(1, Math.min(level || 1, 10))
+        });
+    }
+
+    mergeBoosts() {
+        const grouped = {};
+        for (const boost of this.boosts) {
+            const key = `${boost.type}_${boost.level}`;
+            if (!grouped[key]) grouped[key] = [];
+            grouped[key].push(boost);
+        }
+
+        let merged = false;
+        for (const key of Object.keys(grouped)) {
+            const group = grouped[key];
+            while (group.length >= 2) {
+                const b1 = group.pop();
+                const b2 = group.pop();
+                this.boosts = this.boosts.filter(b => b.id !== b1.id && b.id !== b2.id);
+                const nextLevel = Math.min(10, (b1.level || 1) + 1);
+                this.addBoost({type: b1.type, level: nextLevel});
+                merged = true;
+            }
+        }
+
+        if (merged) {
+            this.equippedBoosts = this.equippedBoosts.filter(id => this.boosts.some(b => b.id === id));
+            this.saveBoosts();
+            if (this.state === STATE_MISSIONS) {
+                this.createMissionUI();
+            }
+        }
+    }
+
+    equipBoost(boostId) {
+        if (this.equippedBoosts.includes(boostId)) return;
+        if (this.equippedBoosts.length >= 3) return;
+        this.equippedBoosts.push(boostId);
+        this.saveBoosts();
+        if (this.state === STATE_MISSIONS) {
+            this.createMissionUI();
+        }
+    }
+
+    unequipBoost(boostId) {
+        this.equippedBoosts = this.equippedBoosts.filter(id => id !== boostId);
+        this.saveBoosts();
+        if (this.state === STATE_MISSIONS) {
+            this.createMissionUI();
+        }
+    }
+
+    sellBoost(boostId) {
+        const idx = this.boosts.findIndex(b => b.id === boostId);
+        if (idx === -1) return;
+        const boost = this.boosts[idx];
+        const value = this.getBoostSellValue(boost.level || 1);
+        this.dataManager.data.tickets = (this.dataManager.data.tickets || 0) + value;
+        this.boosts.splice(idx, 1);
+        this.equippedBoosts = this.equippedBoosts.filter(id => id !== boostId);
+        this.saveBoosts();
+        if (this.state === STATE_MISSIONS) {
+            this.createMissionUI();
+        }
+    }
+
+    generateMissionSet(count) {
+        const list = [];
+        while (list.length < count) {
+            const typesInUse = list.map(m => m.type);
+            list.push(this.generateMission(typesInUse));
+        }
+        return list;
+    }
+
+    getRandomInt(min, max) {
+        return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
+
+    pickDifficultyKey() {
+        const roll = Math.random();
+        if (roll < 0.45) return "easy";
+        if (roll < 0.75) return "medium";
+        if (roll < 0.93) return "hard";
+        return "epic";
+    }
+
+    getDifficultyConfig(key) {
+        const map = {
+            easy: {label: "Easy", baseReward: 4, perUnit: 1.0},
+            medium: {label: "Medium", baseReward: 8, perUnit: 1.6},
+            hard: {label: "Hard", baseReward: 14, perUnit: 2.3},
+            epic: {label: "Epic", baseReward: 22, perUnit: 3.2}
+        };
+        return map[key] || map.easy;
+    }
+
+    generateMission(excludedTypes = []) {
+        let template = null;
+        const pool = this.missionTemplates.filter(t => !excludedTypes.includes(t.type));
+        if (pool.length > 0) {
+            template = pool[Math.floor(Math.random() * pool.length)];
+        } else {
+            template = this.missionTemplates[Math.floor(Math.random() * this.missionTemplates.length)];
+        }
+
+        const difficultyKey = this.pickDifficultyKey();
+        const range = template.difficultyTargets[difficultyKey] || template.difficultyTargets.easy;
+        const target = this.getRandomInt(range[0], range[1]);
+        const diff = this.getDifficultyConfig(difficultyKey);
+        const rewardFactor = template.rewardFactor(target);
+        const reward = Math.max(3, Math.round(diff.baseReward + diff.perUnit * rewardFactor));
+
+        return {
+            id: `${Date.now()}_${Math.floor(Math.random() * 100000)}`,
+            type: template.type,
+            title: template.title,
+            description: template.description(target),
+            target,
+            progress: 0,
+            difficulty: diff.label,
+            reward,
+            completed: false
+        };
+    }
+
+    replaceMission(index) {
+        const usedTypes = this.missions.filter((_, i) => i !== index).map(m => m.type);
+        this.missions[index] = this.generateMission(usedTypes);
+        this.saveMissions();
+    }
+
+    saveMissions() {
+        this.dataManager.data.missions = this.missions;
+        this.dataManager.save();
+    }
+
+    updateMissionProgress(type, amount, setValue = false) {
+        let changed = false;
+        for (const mission of this.missions) {
+            if (mission.type !== type) continue;
+            if (setValue) {
+                if (amount > mission.progress) {
+                    mission.progress = amount;
+                    changed = true;
+                }
+            } else {
+                mission.progress += amount;
+                changed = true;
+            }
+            if (mission.progress >= mission.target) {
+                mission.progress = mission.target;
+                mission.completed = true;
+            }
+        }
+        if (changed) {
+            this.saveMissions();
+            if (this.state === STATE_MISSIONS) {
+                this.createMissionUI();
+            }
+        }
+    }
+
+    createMissionUI() {
+        this.missionButtons = [];
+        const panel = {x: 40, y: 40, w: WINDOW_WIDTH - 80, h: WINDOW_HEIGHT - 80};
+
+        this.missionButtons.push(new Button("BACK", panel.x + 20, panel.y + 20, 80, 40,
+            () => { this.state = STATE_MENU; this.clearPracticeGhostTrace(); }, "outline"));
+
+        const tabs = [["MISSIONS", "missions"], ["GACHA", "gacha"], ["INVENTORY", "inventory"]];
+        let tabX = panel.x + 120;
+        for (const [label, key] of tabs) {
+            const style = this.missionsTab === key ? "primary" : "outline";
+            this.missionButtons.push(new Button(label, tabX, panel.y + 20, 120, 40,
+                () => { this.missionsTab = key; this.createMissionUI(); }, style));
+            tabX += 130;
+        }
+
+        if (this.missionsTab === "missions") {
+            const cardH = 110;
+            const cardGap = 18;
+            const startY = panel.y + 90;
+            for (let i = 0; i < this.missions.length; i++) {
+                const cardY = startY + i * (cardH + cardGap);
+                const buttonText = this.missions[i].completed ? "COLLECT" : "ACTIVE";
+                const btnStyle = this.missions[i].completed ? "primary" : "outline";
+                const btnX = panel.x + panel.w - 140;
+                const btnY = cardY + 30;
+                const action = this.missions[i].completed ? (() => {
+                    const reward = this.missions[i].reward;
+                    this.dataManager.data.tickets = (this.dataManager.data.tickets || 0) + reward;
+                    this.replaceMission(i);
+                    this.createMissionUI();
+                }) : null;
+                this.missionButtons.push(new Button(buttonText, btnX, btnY, 110, 45, action, btnStyle));
+            }
+        } else if (this.missionsTab === "gacha") {
+            const tickets = this.dataManager.data.tickets || 0;
+            if (tickets > 0) {
+                if (!this.gachaSpend || this.gachaSpend < 1) {
+                    this.gachaSpend = Math.min(10, tickets);
+                }
+            } else {
+                this.gachaSpend = 0;
+            }
+
+            const spinX = panel.x + 60;
+            const spinW = panel.w - 120;
+            const spinY = panel.y + 210;
+            this.missionButtons.push(new Button("SPIN", spinX, spinY, spinW, 44,
+                () => this.spinGacha(this.gachaSpend || 0), "primary"));
+        } else if (this.missionsTab === "inventory") {
+            const listStartY = panel.y + 140;
+            const rowH = 52;
+            const listX = panel.x + 20;
+            const listW = panel.w - 40;
+            this.missionButtons.push(new Button("MERGE", panel.x + panel.w - 120, panel.y + 20, 90, 40,
+                () => this.mergeBoosts(), "outline"));
+
+            const listCount = Math.min(this.boosts.length, 6);
+            for (let i = 0; i < listCount; i++) {
+                const boost = this.boosts[i];
+                const isEquipped = this.equippedBoosts.includes(boost.id);
+                const rowY = listStartY + i * rowH;
+                const equipText = isEquipped ? "UNEQUIP" : "EQUIP";
+                const equipStyle = isEquipped ? "primary" : "outline";
+                this.missionButtons.push(new Button(equipText, listX + listW - 210, rowY + 6, 90, 26,
+                    () => {
+                        if (isEquipped) this.unequipBoost(boost.id);
+                        else this.equipBoost(boost.id);
+                    }, equipStyle));
+                this.missionButtons.push(new Button("SELL", listX + listW - 110, rowY + 6, 90, 26,
+                    () => this.sellBoost(boost.id), "danger"));
+            }
+        }
     }
 
     quitGame() {
@@ -305,11 +881,13 @@ class Game {
 
         this.lavaCells = new Set();
         this.lavaTimer = 0;
-        this.lavaStartDelay = 120;
+        const boostEffects = this.getBoostEffects();
+        this.lavaStartDelay = 120 + boostEffects.lavaDelayBonus;
         this.levelFrameCount = 0;
 
         const startInterval = Math.max(2.0, 25.0 - this.level * 1.0);
-        this.currentLavaInterval = startInterval;
+        this.baseLavaInterval = startInterval;
+        this.currentLavaInterval = startInterval * boostEffects.lavaIntervalMultiplier;
         this.clearPracticeGhostTrace();
 
         this.lavaFrozenUntil = 0;
@@ -318,7 +896,9 @@ class Game {
     }
 
     spawnLavaFreezePickups() {
-        const numPickups = Math.floor((this.level - 1) / 20) + 1;
+        const boostEffects = this.getBoostEffects();
+        const basePickups = Math.floor((this.level - 1) / 20) + 1;
+        const numPickups = basePickups + boostEffects.freezeCountBonus;
         this.lavaFreezePickupSpawns = [];
         const reachable = this.getReachableOpenCells();
         const candidates = reachable.filter(([r, c]) => {
@@ -367,11 +947,13 @@ class Game {
 
     collectLavaFreeze(index) {
         const now = Date.now();
-        const addMs = 100 * this.level;
+        const boostEffects = this.getBoostEffects();
+        const addMs = Math.round(100 * this.level * boostEffects.freezeDurationMultiplier);
         const base = Math.max(now, this.lavaFrozenUntil);
         this.lavaFrozenUntil = base + addMs;
         this.lavaFreezePickups[index] = null;
         this.lavaFreezePickups = this.lavaFreezePickups.filter(p => p);
+        this.updateMissionProgress("collect_freeze", 1);
     }
 
     resetAnimations() {
@@ -498,6 +1080,7 @@ class Game {
                 this._appendPracticeGhostPointFromPixel(this.playerPixelPos);
             }
             this.triggerImpact();
+            this.updateMissionProgress("slide_moves", 1);
         } else {
             const moveX = (dx / dist) * moveSpeed;
             const moveY = (dy / dist) * moveSpeed;
@@ -620,7 +1203,9 @@ class Game {
         if (this.lavaCells.size === 0) this.lavaCells.add(`${this.mazeGen.start[0]},${this.mazeGen.start[1]}`);
 
         if (this.levelFrameCount % 60 === 0) {
-            this.currentLavaInterval = Math.max(1.5, this.currentLavaInterval - 0.2);
+            const boostEffects = this.getBoostEffects();
+            this.baseLavaInterval = Math.max(1.5, this.baseLavaInterval - 0.2);
+            this.currentLavaInterval = this.baseLavaInterval * boostEffects.lavaIntervalMultiplier;
         }
 
         this.lavaTimer++;
@@ -991,6 +1576,69 @@ class Game {
         }
     }
 
+    drawGachaAnimation(panel, colors) {
+        if (!this.gachaAnim.active) return;
+        const now = Date.now();
+        const {bg, floor, text, border} = colors;
+        const cx = WINDOW_WIDTH / 2;
+        const cy = WINDOW_HEIGHT / 2 + 20;
+
+        const cardW = 360;
+        const cardH = 200;
+        const wobble = Math.sin((now - this.gachaAnim.startAt) / 90) * 0.03;
+        const pulse = 1 + wobble;
+
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+        this.ctx.fillRect(panel.x, panel.y, panel.w, panel.h);
+
+        this.ctx.save();
+        this.ctx.translate(cx, cy);
+        this.ctx.scale(pulse, pulse);
+        this.ctx.fillStyle = `rgb(${floor.join(',')})`;
+        this.ctx.fillRect(-cardW / 2, -cardH / 2, cardW, cardH);
+        this.ctx.strokeStyle = `rgb(${border.join(',')})`;
+        this.ctx.lineWidth = 3;
+        this.ctx.strokeRect(-cardW / 2, -cardH / 2, cardW, cardH);
+
+        this.ctx.fillStyle = `rgb(${text.join(',')})`;
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+
+        if (!this.gachaAnim.revealed) {
+            this.ctx.font = 'bold 24px Arial';
+            this.ctx.fillText('SPINNING...', 0, -40);
+            this.ctx.font = 'bold 64px Arial';
+            this.ctx.fillText('?', 0, 25);
+            this.ctx.font = '12px Arial';
+            this.ctx.fillText(`Tickets Spent: ${this.gachaAnim.spend}`, 0, 70);
+        } else if (this.gachaAnim.boostList.length) {
+            const primary = this.gachaAnim.boostList[0];
+            const boostName = this.getBoostName(primary);
+            const boostDesc = this.getBoostDescription(primary);
+            const extraCount = this.gachaAnim.boostList.length - 1;
+            this.ctx.font = 'bold 22px Arial';
+            this.ctx.fillText('NEW BOOST!', 0, -50);
+            this.ctx.font = 'bold 18px Arial';
+            this.ctx.fillText(boostName, 0, -10);
+            this.ctx.font = '12px Arial';
+            this.ctx.fillText(boostDesc, 0, 20);
+            if (extraCount > 0) {
+                this.ctx.fillText(`+${extraCount} more`, 0, 38);
+            }
+            this.ctx.font = '12px Arial';
+            this.ctx.fillText(`Tickets Spent: ${this.gachaAnim.spend}`, 0, 70);
+        } else {
+            this.ctx.font = 'bold 22px Arial';
+            this.ctx.fillText('NO BOOST', 0, -20);
+            this.ctx.font = '12px Arial';
+            this.ctx.fillText('Try again!', 0, 20);
+            this.ctx.fillText(`Tickets Spent: ${this.gachaAnim.spend}`, 0, 70);
+        }
+
+        this.ctx.restore();
+        this.ctx.globalAlpha = 1;
+    }
+
     draw() {
         const lvlSkinKey = this.dataManager.data.equipped_level_skin;
         const lvlSkin = LEVEL_SKINS[lvlSkinKey] || LEVEL_SKINS.default;
@@ -1067,8 +1715,19 @@ class Game {
             this.drawTextCentered(`PRACTICE SCORE: ${this.dataManager.data.high_level_practice} | DEATHS: ${practiceDeaths}`, 18, cText, -70);
             this.drawTextCentered("You can unlock high tier skins (30+) in practice mode", 12, cBorder, -45);
 
+            this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+            this.ctx.font = 'bold 16px Arial';
+            this.ctx.textAlign = 'right';
+            this.ctx.textBaseline = 'top';
+            this.ctx.fillText(`Tickets: ${this.dataManager.data.tickets || 0}`, WINDOW_WIDTH - 20, 20);
+            this.ctx.textAlign = 'left';
+
             for (const btn of this.menuButtons) {
-                if (btn.text === "INFO") {
+                if (btn.text === "🎟️") {
+                    btn.color = [20, 20, 20];
+                    btn.hoverColor = [50, 50, 50];
+                    btn.textColor = [220, 220, 220];
+                } else if (btn.text === "INFO") {
                     btn.color = [60, 100, 40];
                     btn.hoverColor = [80, 130, 60];
                     btn.textColor = [150, 200, 100];
@@ -1081,7 +1740,8 @@ class Game {
                 } else {
                     btn.textColor = [255, 200, 100];
                 }
-                btn.draw(this.ctx);
+                const fontSize = btn.text === "🎟️" ? 24 : 18;
+                btn.draw(this.ctx, fontSize);
             }
         } else if (this.state === STATE_SHOP) {
             for (let i = 0; i < WINDOW_WIDTH; i += 40) {
@@ -1111,6 +1771,151 @@ class Game {
                 }
                 btn.draw(this.ctx, 14);
             }
+        } else if (this.state === STATE_MISSIONS) {
+            for (let i = 0; i < WINDOW_WIDTH; i += 40) {
+                this.ctx.strokeStyle = `rgb(${cFloor.join(',')})`;
+                this.ctx.lineWidth = 1;
+                this.ctx.beginPath();
+                this.ctx.moveTo(i, 0);
+                this.ctx.lineTo(i, WINDOW_HEIGHT);
+                this.ctx.stroke();
+            }
+
+            const panel = {x: 40, y: 40, w: WINDOW_WIDTH - 80, h: WINDOW_HEIGHT - 80};
+            this.ctx.fillStyle = `rgb(${cBg.join(',')})`;
+            this.ctx.fillRect(panel.x, panel.y, panel.w, panel.h);
+            this.ctx.strokeStyle = `rgb(${cBorder.join(',')})`;
+            this.ctx.lineWidth = 3;
+            this.ctx.strokeRect(panel.x, panel.y, panel.w, panel.h);
+
+            this.drawTextCentered("GACHA", 40, cText, -250);
+
+            this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+            this.ctx.font = 'bold 16px Arial';
+            this.ctx.textAlign = 'right';
+            this.ctx.textBaseline = 'top';
+            this.ctx.fillText(`Tickets: ${this.dataManager.data.tickets || 0}`, panel.x + panel.w - 20, panel.y + 20);
+            this.ctx.textAlign = 'left';
+
+            if (this.missionsTab === "missions") {
+                const cardH = 110;
+                const cardGap = 18;
+                const startY = panel.y + 90;
+                for (let i = 0; i < this.missions.length; i++) {
+                    const mission = this.missions[i];
+                    const cardX = panel.x + 20;
+                    const cardY = startY + i * (cardH + cardGap);
+                    const cardW = panel.w - 40;
+
+                    this.ctx.fillStyle = `rgb(${cFloor.join(',')})`;
+                    this.ctx.fillRect(cardX, cardY, cardW, cardH);
+                    this.ctx.strokeStyle = `rgb(${cBorder.join(',')})`;
+                    this.ctx.lineWidth = 2;
+                    this.ctx.strokeRect(cardX, cardY, cardW, cardH);
+
+                    this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                    this.ctx.font = 'bold 18px Arial';
+                    this.ctx.textAlign = 'left';
+                    this.ctx.textBaseline = 'top';
+                    this.ctx.fillText(mission.title, cardX + 14, cardY + 12);
+
+                    this.ctx.font = '14px Arial';
+                    this.ctx.fillText(mission.description, cardX + 14, cardY + 40);
+
+                    const progressVal = Math.floor(mission.progress);
+                    this.ctx.fillStyle = mission.completed ? 'rgb(0, 180, 0)' : `rgb(${cText.join(',')})`;
+                    this.ctx.fillText(`Progress: ${progressVal}/${mission.target}`, cardX + 14, cardY + 64);
+
+                    this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                    this.ctx.fillText(`Difficulty: ${mission.difficulty}`, cardX + 14, cardY + 84);
+
+                    this.ctx.textAlign = 'right';
+                    this.ctx.fillText(`Reward: ${mission.reward} tickets`, cardX + cardW - 16, cardY + 84);
+                    this.ctx.textAlign = 'left';
+                }
+            } else if (this.missionsTab === "gacha") {
+                this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                this.ctx.font = 'bold 20px Arial';
+                this.ctx.textAlign = 'left';
+                this.ctx.textBaseline = 'top';
+                this.ctx.fillText("BUY GACHA", panel.x + 40, panel.y + 90);
+                this.ctx.font = '12px Arial';
+                this.ctx.fillText("Spend more tickets for stronger boosts", panel.x + 40, panel.y + 118);
+
+                const slider = this.getGachaSliderRect();
+                const tickets = this.dataManager.data.tickets || 0;
+                const minValue = tickets > 0 ? 1 : 0;
+                const maxValue = Math.max(1, tickets);
+                if (tickets === 0) this.gachaSpend = 0;
+
+                this.ctx.strokeStyle = `rgb(${cBorder.join(',')})`;
+                this.ctx.lineWidth = 2;
+                this.ctx.beginPath();
+                this.ctx.moveTo(slider.x, slider.y + slider.h / 2);
+                this.ctx.lineTo(slider.x + slider.w, slider.y + slider.h / 2);
+                this.ctx.stroke();
+
+                const pct = maxValue === minValue ? 0 : (this.gachaSpend - minValue) / (maxValue - minValue);
+                const knobX = slider.x + slider.w * Math.max(0, Math.min(1, pct));
+                this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                this.ctx.beginPath();
+                this.ctx.arc(knobX, slider.y + slider.h / 2, 8, 0, Math.PI * 2);
+                this.ctx.fill();
+
+                this.ctx.font = '12px Arial';
+                this.ctx.textAlign = 'left';
+                this.ctx.fillText(`Spend: ${this.gachaSpend}`, slider.x, slider.y + 18);
+                this.ctx.textAlign = 'right';
+                this.ctx.fillText(`Max: ${tickets}`, slider.x + slider.w, slider.y + 18);
+                this.ctx.textAlign = 'left';
+            } else if (this.missionsTab === "inventory") {
+                this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                this.ctx.font = 'bold 18px Arial';
+                this.ctx.textAlign = 'left';
+                this.ctx.textBaseline = 'top';
+                this.ctx.fillText("BOOST INVENTORY", panel.x + 20, panel.y + 80);
+
+                this.ctx.font = '12px Arial';
+                this.ctx.fillText(`Equipped: ${this.equippedBoosts.length}/3`, panel.x + 20, panel.y + 102);
+
+                const listStartY = panel.y + 160;
+                const rowH = 52;
+                const listX = panel.x + 20;
+                const listW = panel.w - 40;
+                const listCount = Math.min(this.boosts.length, 6);
+                for (let i = 0; i < listCount; i++) {
+                    const boost = this.boosts[i];
+                    const isEquipped = this.equippedBoosts.includes(boost.id);
+                    const rowY = listStartY + i * rowH;
+                    this.ctx.fillStyle = isEquipped ? 'rgb(0, 160, 0)' : `rgb(${cText.join(',')})`;
+                    this.ctx.font = '12px Arial';
+                    this.ctx.fillText(this.getBoostName(boost), listX, rowY + 4);
+                    this.ctx.font = '10px Arial';
+                    this.ctx.fillText(this.getBoostDescription(boost), listX, rowY + 18);
+
+                    const sellValue = this.getBoostSellValue(boost.level || 1);
+                    this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                    this.ctx.font = '10px Arial';
+                    this.ctx.textAlign = 'right';
+                    this.ctx.fillText(`Sell: ${sellValue}`, listX + listW - 10, rowY + 18);
+                    this.ctx.textAlign = 'left';
+                }
+            }
+
+            for (const btn of this.missionButtons) {
+                if (btn.style === "outline") {
+                    btn.textColor = cText;
+                    btn.color = cBg;
+                }
+                btn.draw(this.ctx, 14);
+            }
+
+            this.drawGachaAnimation(panel, {
+                bg: cBg,
+                floor: cFloor,
+                text: cText,
+                border: cBorder
+            });
         } else if (this.state === STATE_GAMEOVER) {
             this.drawTextCentered("GAME OVER", 80, cLava, -50);
             this.drawTextCentered(`Level Reached: ${this.level}`, 18, cText, 20);
@@ -1348,6 +2153,9 @@ Press SPACE or ESC to go back`;
         this.lastTime = now;
 
         if (this.state === STATE_PLAYING) {
+            if (!this.isPaused) {
+                this.updateMissionProgress("play_time", delta / 1000);
+            }
             this.updatePlayerMovement();
             this.updateMisc();
             this.updateLava();
@@ -1355,16 +2163,22 @@ Press SPACE or ESC to go back`;
 
             if (!this.isPaused && !this.isMoving && this.playerGridPos[0] === this.mazeGen.end[0] &&
                 this.playerGridPos[1] === this.mazeGen.end[1]) {
+                this.updateMissionProgress("complete_levels", 1);
+                if (this.practice_mode) {
+                    this.updateMissionProgress("practice_levels", 1);
+                }
                 if (!this.practice_mode) {
                     this.dataManager.data.points += this.level * 10;
                 }
                 this.dataManager.save();
                 this.level++;
+                this.updateMissionProgress("reach_level", this.level, true);
                 this.gameStartTime = Date.now();
                 this.initLevel();
             }
         }
 
+        this.updateGachaAnimation();
         this.draw();
 
         setTimeout(() => this.gameLoop(), 1000 / FPS);
