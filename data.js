@@ -21,7 +21,8 @@ class DataManager {
             equipped_level_skin: "default",
             unlocked_trails: ["none"],
             unlocked_anims: ["none"],
-            unlocked_level_skins: ["default"]
+            unlocked_level_skins: ["default"],
+            unlocked_gacha_skins: []
         };
         this.load();
     }
@@ -41,7 +42,8 @@ class DataManager {
             equipped_level_skin: "default",
             unlocked_trails: ["none"],
             unlocked_anims: ["none"],
-            unlocked_level_skins: ["default"]
+            unlocked_level_skins: ["default"],
+            unlocked_gacha_skins: []
         };
         this.resetNotice = reason;
         this.save();

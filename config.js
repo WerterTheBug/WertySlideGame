@@ -30,7 +30,11 @@ const SKINS = {
     'ghost': {name: "Phantom", color: [200, 255, 255], level_req: 45, type: 'ghost_glitch'},
     'rainbow': {name: "Rainbow", color: [255, 255, 255], level_req: 50, type: 'rainbow'},
     'void': {name: "Void", color: [0, 0, 0], border: [0, 0, 0], level_req: 60, type: 'void_smear'},
-    'chrome': {name: "Chrome", color: [192, 192, 192], type: 'liquid_chrome', level_req: 70}
+    'chrome': {name: "Chrome", color: [192, 192, 192], type: 'liquid_chrome', level_req: 70},
+    'gacha_ember': {name: "Ember", color: [255, 120, 60], border: [80, 20, 0], type: 'pulse_glow', gacha: true, sell_value: 25, rarity: "Common"},
+    'gacha_aurora': {name: "Aurora", color: [80, 255, 200], border: [20, 80, 60], type: 'prism', gacha: true, sell_value: 40, rarity: "Rare"},
+    'gacha_starlight': {name: "Starlight", color: [200, 200, 255], border: [90, 90, 140], type: 'galaxy', gacha: true, sell_value: 60, rarity: "Epic"},
+    'gacha_glitch': {name: "Glitchcore", color: [255, 0, 200], border: [0, 255, 255], type: 'ghost_glitch', gacha: true, sell_value: 80, rarity: "Legendary"}
 };
 
 const TRAILS = {

@@ -11,6 +11,9 @@ class Game {
         if (this.dataManager.resetNotice) {
             alert(this.dataManager.resetNotice);
         }
+        if (!Array.isArray(this.dataManager.data.unlocked_gacha_skins)) {
+            this.dataManager.data.unlocked_gacha_skins = [];
+        }
        
         this.baseCols = 21;
         this.baseRows = 15;
@@ -62,7 +65,17 @@ class Game {
             endAt: 0,
             revealed: false,
             boostList: [],
+            skinKey: null,
             spend: 0
+        };
+        this.ticketPickupSpawns = [];
+        this.ticketPickups = [];
+        this.mergeAnim = {
+            active: false,
+            startAt: 0,
+            duration: 600,
+            fromIndexMap: {},
+            originIndex: 0
         };
 
         this.shakeOffset = [0, 0];
@@ -353,6 +366,22 @@ class Game {
                 difficultyTargets: {easy: [2, 3], medium: [4, 6], hard: [7, 10], epic: [12, 16]},
                 description: (t) => `Complete ${t} practice levels`,
                 rewardFactor: (t) => t * 2
+            },
+            {
+                type: "styled_slides",
+                title: "Style Points",
+                difficultyTargets: {easy: [15, 25], medium: [40, 60], hard: [80, 120], epic: [150, 220]},
+                description: (t) => `Make ${t} slides`,
+                rewardFactor: (t) => Math.round(t / 5),
+                requirementOptions: this.getAllCosmeticRequirements()
+            },
+            {
+                type: "styled_time",
+                title: "Iconic Chill",
+                difficultyTargets: {easy: [60, 120], medium: [180, 300], hard: [420, 600], epic: [720, 900]},
+                description: (t) => `Play for ${t} seconds`,
+                rewardFactor: (t) => Math.round(t / 35),
+                requirementOptions: this.getAllCosmeticRequirements()
             }
         ];
     }
@@ -389,6 +418,10 @@ class Game {
             freeze_duration: {
                 name: "Freeze Time",
                 description: (lvl) => `Longer freeze time (Lv ${lvl})`
+            },
+            ticket_luck: {
+                name: "Ticket Luck",
+                description: (lvl) => `Higher ticket spawn + value (Lv ${lvl})`
             }
         };
     }
@@ -411,7 +444,9 @@ class Game {
             lavaIntervalMultiplier: 1,
             lavaDelayBonus: 0,
             freezeCountBonus: 0,
-            freezeDurationMultiplier: 1
+            freezeDurationMultiplier: 1,
+            ticketSpawnBonus: 0,
+            ticketValueBonus: 0
         };
         for (const id of this.equippedBoosts) {
             const boost = this.boosts.find(b => b.id === id);
@@ -425,9 +460,19 @@ class Game {
                 effects.freezeCountBonus += Math.max(1, Math.floor(lvl / 2));
             } else if (boost.type === "freeze_duration") {
                 effects.freezeDurationMultiplier += 0.12 * lvl;
+            } else if (boost.type === "ticket_luck") {
+                effects.ticketSpawnBonus += 0.02 * lvl;
+                effects.ticketValueBonus += 0.12 * lvl;
             }
         }
         return effects;
+    }
+
+    getTicketPickupValue() {
+        const boostEffects = this.getBoostEffects();
+        const levelValue = 1 + Math.floor(this.level / 5);
+        const bonus = Math.round(levelValue * boostEffects.ticketValueBonus);
+        return Math.max(1, levelValue + bonus);
     }
 
     getBoostName(boost) {
@@ -469,11 +514,11 @@ class Game {
             this.gachaSpend = Math.min(this.gachaSpend, this.dataManager.data.tickets);
         }
 
-        const boostList = this.rollGachaBoosts(spend);
-        this.startGachaAnimation(spend, boostList);
+        const reward = this.rollGachaRewards(spend);
+        this.startGachaAnimation(spend, reward);
     }
 
-    startGachaAnimation(spend, boostList) {
+    startGachaAnimation(spend, reward) {
         const now = Date.now();
         this.gachaAnim = {
             active: true,
@@ -481,7 +526,8 @@ class Game {
             revealAt: now + 900,
             endAt: now + 2300,
             revealed: false,
-            boostList: Array.isArray(boostList) ? boostList : [],
+            boostList: Array.isArray(reward?.boostList) ? reward.boostList : [],
+            skinKey: reward?.skinKey || null,
             spend
         };
     }
@@ -491,6 +537,13 @@ class Game {
         const now = Date.now();
         if (!this.gachaAnim.revealed && now >= this.gachaAnim.revealAt) {
             this.gachaAnim.revealed = true;
+            if (this.gachaAnim.skinKey) {
+                if (!this.dataManager.data.unlocked_gacha_skins.includes(this.gachaAnim.skinKey)) {
+                    this.dataManager.data.unlocked_gacha_skins.push(this.gachaAnim.skinKey);
+                }
+                this.dataManager.save();
+                this.createMissionUI();
+            }
             if (this.gachaAnim.boostList.length) {
                 for (const boost of this.gachaAnim.boostList) {
                     this.addBoost(boost);
@@ -502,10 +555,29 @@ class Game {
         if (now >= this.gachaAnim.endAt) {
             this.gachaAnim.active = false;
             this.gachaAnim.boostList = [];
+            this.gachaAnim.skinKey = null;
             this.gachaAnim.spend = 0;
             this.gachaAnim.revealed = false;
         }
     }
+
+    getUnownedGachaSkins() {
+        return Object.keys(SKINS).filter(key => {
+            const skin = SKINS[key];
+            return skin && skin.gacha && !this.dataManager.data.unlocked_gacha_skins.includes(key);
+        });
+    }
+
+    rollGachaRewards(spend) {
+        const unowned = this.getUnownedGachaSkins();
+        const skinChance = Math.min(0.25, 0.04 + Math.log10(spend + 1) * 0.05);
+        if (unowned.length && Math.random() < skinChance) {
+            const key = unowned[Math.floor(Math.random() * unowned.length)];
+            return {skinKey: key, boostList: []};
+        }
+        return {skinKey: null, boostList: this.rollGachaBoosts(spend)};
+    }
+
 
     getBoostSellValue(level) {
         return Math.max(2, Math.round(3 + (level || 1) * 4));
@@ -585,23 +657,41 @@ class Game {
     }
 
     mergeBoosts() {
-        const grouped = {};
+        const oldBoosts = this.boosts.slice();
+        const mergeSteps = [];
+        const byType = {};
         for (const boost of this.boosts) {
-            const key = `${boost.type}_${boost.level}`;
-            if (!grouped[key]) grouped[key] = [];
-            grouped[key].push(boost);
+            if (!byType[boost.type]) byType[boost.type] = [];
+            byType[boost.type].push(boost);
         }
 
         let merged = false;
-        for (const key of Object.keys(grouped)) {
-            const group = grouped[key];
+        for (const type of Object.keys(byType)) {
+            const group = byType[type].slice().sort((a, b) => (b.level || 1) - (a.level || 1));
+            if (group.length < 2) continue;
+
+            for (const boost of group) {
+                this.boosts = this.boosts.filter(b => b.id !== boost.id);
+            }
+
             while (group.length >= 2) {
-                const b1 = group.pop();
-                const b2 = group.pop();
-                this.boosts = this.boosts.filter(b => b.id !== b1.id && b.id !== b2.id);
-                const nextLevel = Math.min(10, (b1.level || 1) + 1);
-                this.addBoost({type: b1.type, level: nextLevel});
+                const b1 = group.shift();
+                const b2 = group.shift();
+                const mergedLevel = this.rollMergedBoostLevel([b1.level || 1, b2.level || 1]);
+                const mergedBoost = {id: `${Date.now()}_${Math.floor(Math.random() * 100000)}`, type, level: mergedLevel};
+                mergeSteps.push({fromIds: [b1.id, b2.id], toId: mergedBoost.id});
+                group.push(mergedBoost);
+                group.sort((a, b) => (b.level || 1) - (a.level || 1));
                 merged = true;
+            }
+
+            if (group.length === 1) {
+                const finalBoost = group[0];
+                this.boosts.push({
+                    id: finalBoost.id || `${Date.now()}_${Math.floor(Math.random() * 100000)}`,
+                    type,
+                    level: Math.max(1, Math.min(finalBoost.level || 1, 10))
+                });
             }
         }
 
@@ -612,6 +702,52 @@ class Game {
                 this.createMissionUI();
             }
         }
+        return {merged, oldBoosts, newBoosts: this.boosts.slice(), mergeSteps};
+    }
+
+    rollMergedBoostLevel(levels) {
+        const totalValue = levels.reduce((sum, lvl) => sum + Math.pow(2, Math.max(1, lvl)), 0);
+        let remaining = totalValue;
+        let achieved = 0;
+        for (let lvl = 1; lvl <= 10; lvl++) {
+            const cost = Math.random() * Math.pow(2, lvl);
+            if (cost <= remaining) {
+                remaining -= cost;
+                achieved = lvl;
+            } else {
+                break;
+            }
+        }
+        return Math.max(1, achieved);
+    }
+
+    startMergeAnimation() {
+        if (this.mergeAnim.active) return;
+        const {merged, oldBoosts, newBoosts, mergeSteps} = this.mergeBoosts();
+        if (!merged) return;
+
+        const fromIndexMap = {};
+        const oldBoostById = {};
+        oldBoosts.forEach((b, idx) => {
+            fromIndexMap[b.id] = idx;
+            oldBoostById[b.id] = b;
+        });
+        const toIndexMap = {};
+        newBoosts.forEach((b, idx) => {
+            toIndexMap[b.id] = idx;
+        });
+
+        const originIndex = Math.floor(Math.min(newBoosts.length, 6) / 2);
+        this.mergeAnim = {
+            active: true,
+            startAt: Date.now(),
+            duration: 700,
+            fromIndexMap,
+            originIndex,
+            oldBoostById,
+            toIndexMap,
+            mergeSteps
+        };
     }
 
     equipBoost(boostId) {
@@ -641,6 +777,26 @@ class Game {
         this.boosts.splice(idx, 1);
         this.equippedBoosts = this.equippedBoosts.filter(id => id !== boostId);
         this.saveBoosts();
+        if (this.state === STATE_MISSIONS) {
+            this.createMissionUI();
+        }
+    }
+
+    getGachaSkinSellValue(key) {
+        const skin = SKINS[key];
+        if (skin && Number.isFinite(skin.sell_value)) return Math.max(1, Math.round(skin.sell_value));
+        return 20;
+    }
+
+    sellGachaSkin(key) {
+        if (!this.dataManager.data.unlocked_gacha_skins.includes(key)) return;
+        if (this.dataManager.data.equipped_skin === key) {
+            this.dataManager.data.equipped_skin = "default";
+        }
+        const value = this.getGachaSkinSellValue(key);
+        this.dataManager.data.tickets = (this.dataManager.data.tickets || 0) + value;
+        this.dataManager.data.unlocked_gacha_skins = this.dataManager.data.unlocked_gacha_skins.filter(k => k !== key);
+        this.dataManager.save();
         if (this.state === STATE_MISSIONS) {
             this.createMissionUI();
         }
@@ -677,6 +833,27 @@ class Game {
         return map[key] || map.easy;
     }
 
+    getAllCosmeticRequirements() {
+        const requirements = [];
+        for (const [key, skin] of Object.entries(SKINS)) {
+            if (key === "default") continue;
+            requirements.push({type: skin?.gacha ? "gacha_skin" : "skin", key});
+        }
+        for (const key of Object.keys(TRAILS)) {
+            if (key === "none") continue;
+            requirements.push({type: "trail", key});
+        }
+        for (const key of Object.keys(ANIMATIONS)) {
+            if (key === "none") continue;
+            requirements.push({type: "anim", key});
+        }
+        for (const key of Object.keys(LEVEL_SKINS)) {
+            if (key === "default") continue;
+            requirements.push({type: "level_skin", key});
+        }
+        return requirements;
+    }
+
     generateMission(excludedTypes = []) {
         let template = null;
         const pool = this.missionTemplates.filter(t => !excludedTypes.includes(t.type));
@@ -691,19 +868,74 @@ class Game {
         const target = this.getRandomInt(range[0], range[1]);
         const diff = this.getDifficultyConfig(difficultyKey);
         const rewardFactor = template.rewardFactor(target);
-        const reward = Math.max(3, Math.round(diff.baseReward + diff.perUnit * rewardFactor));
+        let reward = Math.max(3, Math.round(diff.baseReward + diff.perUnit * rewardFactor));
+
+        let requirement = null;
+        if (Array.isArray(template.requirementOptions) && template.requirementOptions.length) {
+            requirement = template.requirementOptions[Math.floor(Math.random() * template.requirementOptions.length)];
+        } else if (template.requirement) {
+            requirement = template.requirement;
+        }
+
+        const requirementText = requirement ? this.getRequirementText(requirement) : "";
+        const baseDescription = template.description(target);
+        const description = requirementText ? `${baseDescription} (${requirementText})` : baseDescription;
+
+        if (requirement) {
+            reward = Math.max(3, Math.round(reward * 1.5));
+        }
 
         return {
             id: `${Date.now()}_${Math.floor(Math.random() * 100000)}`,
             type: template.type,
             title: template.title,
-            description: template.description(target),
+            description,
             target,
             progress: 0,
             difficulty: diff.label,
             reward,
-            completed: false
+            completed: false,
+            requirement
         };
+    }
+
+    getRequirementText(requirement) {
+        if (!requirement) return "";
+        const key = requirement.key;
+        if (requirement.type === "skin" || requirement.type === "gacha_skin") {
+            const skin = SKINS[key];
+            return skin ? `Equip ${skin.name}` : `Equip ${key}`;
+        }
+        if (requirement.type === "trail") {
+            const trail = TRAILS[key];
+            return trail ? `Use ${trail.name} trail` : `Use ${key} trail`;
+        }
+        if (requirement.type === "anim") {
+            const anim = ANIMATIONS[key];
+            return anim ? `Use ${anim.name} move` : `Use ${key} move`;
+        }
+        if (requirement.type === "level_skin") {
+            const lvlSkin = LEVEL_SKINS[key];
+            return lvlSkin ? `Use ${lvlSkin.name} theme` : `Use ${key} theme`;
+        }
+        return "Equip required cosmetic";
+    }
+
+    isRequirementMet(requirement) {
+        if (!requirement) return true;
+        if (requirement.type === "skin" || requirement.type === "gacha_skin") {
+            return this.dataManager.data.equipped_skin === requirement.key;
+        }
+        if (requirement.type === "trail") {
+            return this.dataManager.data.equipped_trail === requirement.key;
+        }
+        if (requirement.type === "anim") {
+            return this.dataManager.data.equipped_anim === requirement.key;
+        }
+        if (requirement.type === "level_skin") {
+            return this.dataManager.data.equipped_level_skin === requirement.key;
+        }
+        return false;
     }
 
     replaceMission(index) {
@@ -717,10 +949,19 @@ class Game {
         this.dataManager.save();
     }
 
+    rerollMissions() {
+        this.missions = this.generateMissionSet(3);
+        this.saveMissions();
+        if (this.state === STATE_MISSIONS) {
+            this.createMissionUI();
+        }
+    }
+
     updateMissionProgress(type, amount, setValue = false) {
         let changed = false;
         for (const mission of this.missions) {
             if (mission.type !== type) continue;
+            if (!this.isRequirementMet(mission.requirement)) continue;
             if (setValue) {
                 if (amount > mission.progress) {
                     mission.progress = amount;
@@ -797,23 +1038,50 @@ class Game {
             const rowH = 52;
             const listX = panel.x + 20;
             const listW = panel.w - 40;
+            const mergeAction = this.mergeAnim.active ? null : () => this.startMergeAnimation();
+            const mergeStyle = this.mergeAnim.active ? "outline" : "outline";
             this.missionButtons.push(new Button("MERGE", panel.x + panel.w - 120, panel.y + 20, 90, 40,
-                () => this.mergeBoosts(), "outline"));
+                mergeAction, mergeStyle));
 
             const listCount = Math.min(this.boosts.length, 6);
-            for (let i = 0; i < listCount; i++) {
-                const boost = this.boosts[i];
-                const isEquipped = this.equippedBoosts.includes(boost.id);
-                const rowY = listStartY + i * rowH;
-                const equipText = isEquipped ? "UNEQUIP" : "EQUIP";
-                const equipStyle = isEquipped ? "primary" : "outline";
-                this.missionButtons.push(new Button(equipText, listX + listW - 210, rowY + 6, 90, 26,
-                    () => {
-                        if (isEquipped) this.unequipBoost(boost.id);
-                        else this.equipBoost(boost.id);
-                    }, equipStyle));
-                this.missionButtons.push(new Button("SELL", listX + listW - 110, rowY + 6, 90, 26,
-                    () => this.sellBoost(boost.id), "danger"));
+            if (!this.mergeAnim.active) {
+                for (let i = 0; i < listCount; i++) {
+                    const boost = this.boosts[i];
+                    const isEquipped = this.equippedBoosts.includes(boost.id);
+                    const rowY = listStartY + i * rowH;
+                    const equipText = isEquipped ? "UNEQUIP" : "EQUIP";
+                    const equipStyle = isEquipped ? "primary" : "outline";
+                    this.missionButtons.push(new Button(equipText, listX + listW - 210, rowY + 6, 90, 26,
+                        () => {
+                            if (isEquipped) this.unequipBoost(boost.id);
+                            else this.equipBoost(boost.id);
+                        }, equipStyle));
+                    this.missionButtons.push(new Button("SELL", listX + listW - 110, rowY + 6, 90, 26,
+                        () => this.sellBoost(boost.id), "danger"));
+                }
+            }
+
+            const gachaSkins = this.dataManager.data.unlocked_gacha_skins || [];
+            const skinStartY = listStartY + listCount * rowH + 30;
+            const skinRowH = 44;
+            const skinCount = Math.min(gachaSkins.length, 4);
+            if (!this.mergeAnim.active) {
+                for (let i = 0; i < skinCount; i++) {
+                    const skinKey = gachaSkins[i];
+                    const rowY = skinStartY + i * skinRowH;
+                    const equipped = this.dataManager.data.equipped_skin === skinKey;
+                    const equipText = equipped ? "UNEQUIP" : "EQUIP";
+                    const equipStyle = equipped ? "primary" : "outline";
+                    this.missionButtons.push(new Button(equipText, listX + listW - 210, rowY + 6, 90, 26,
+                        () => {
+                            if (equipped) this.dataManager.data.equipped_skin = "default";
+                            else this.dataManager.data.equipped_skin = skinKey;
+                            this.dataManager.save();
+                            this.createMissionUI();
+                        }, equipStyle));
+                    this.missionButtons.push(new Button("SELL", listX + listW - 110, rowY + 6, 90, 26,
+                        () => this.sellGachaSkin(skinKey), "danger"));
+                }
             }
         }
     }
@@ -844,6 +1112,7 @@ class Game {
         this.clearPracticeGhostTrace();
         this.lavaFrozenUntil = 0;
         this.lavaFreezePickups = this.lavaFreezePickupSpawns.map(p => p ? [...p] : null).filter(p => p);
+        this.ticketPickups = this.ticketPickupSpawns.map(p => p ? [...p] : null).filter(p => p);
     }
 
     rerollLevel() {
@@ -893,6 +1162,25 @@ class Game {
         this.lavaFrozenUntil = 0;
         this.spawnLavaFreezePickups();
         this.lavaFreezePickups = this.lavaFreezePickupSpawns.map(p => p ? [...p] : null).filter(p => p);
+        this.spawnTicketPickups();
+        this.ticketPickups = this.ticketPickupSpawns.map(p => p ? [...p] : null).filter(p => p);
+    }
+
+    spawnTicketPickups() {
+        const boostEffects = this.getBoostEffects();
+        const baseChance = 0.08;
+        const chance = Math.min(0.4, baseChance + boostEffects.ticketSpawnBonus);
+        this.ticketPickupSpawns = [];
+        if (Math.random() > chance) return;
+        const reachable = this.getReachableOpenCells();
+        const candidates = reachable.filter(([r, c]) => {
+            if (r === this.mazeGen.start[0] && c === this.mazeGen.start[1]) return false;
+            if (r === this.mazeGen.end[0] && c === this.mazeGen.end[1]) return false;
+            return true;
+        });
+        if (candidates.length === 0) return;
+        const idx = Math.floor(Math.random() * candidates.length);
+        this.ticketPickupSpawns.push(candidates[idx]);
     }
 
     spawnLavaFreezePickups() {
@@ -956,6 +1244,16 @@ class Game {
         this.updateMissionProgress("collect_freeze", 1);
     }
 
+    collectTicketPickup(index) {
+        this.ticketPickups[index] = null;
+        this.ticketPickups = this.ticketPickups.filter(p => p);
+        if (!this.practice_mode) {
+            const value = this.getTicketPickupValue();
+            this.dataManager.data.tickets = (this.dataManager.data.tickets || 0) + value;
+            this.dataManager.save();
+        }
+    }
+
     resetAnimations() {
         this.squishScale = [1.0, 1.0];
         this.spinAngle = 0;
@@ -976,6 +1274,12 @@ class Game {
             if (nextR >= 0 && nextR < this.mazeGen.rows && nextC >= 0 && nextC < this.mazeGen.cols) {
                 if (this.grid[nextR][nextC] === 1) break;
                 for (const pickup of this.lavaFreezePickups) {
+                    if (pickup && pickup[0] === nextR && pickup[1] === nextC) {
+                        [r, c] = [nextR, nextC];
+                        return [r, c];
+                    }
+                }
+                for (const pickup of this.ticketPickups) {
                     if (pickup && pickup[0] === nextR && pickup[1] === nextC) {
                         [r, c] = [nextR, nextC];
                         return [r, c];
@@ -1070,7 +1374,6 @@ class Game {
                 this.particles.push(new Particle(px, py, tColor, tType, 4, extraData));
             }
         }
-
         const moveSpeed = animType === 'heavy' ? this.currentMoveVelocity : this.moveSpeed;
 
         if (dist <= moveSpeed) {
@@ -1081,6 +1384,7 @@ class Game {
             }
             this.triggerImpact();
             this.updateMissionProgress("slide_moves", 1);
+            this.updateMissionProgress("styled_slides", 1);
         } else {
             const moveX = (dx / dist) * moveSpeed;
             const moveY = (dy / dist) * moveSpeed;
@@ -1240,6 +1544,12 @@ class Game {
             }
         }
 
+        for (let i = 0; i < this.ticketPickups.length; i++) {
+            if (this.ticketPickups[i] && this.ticketPickups[i][0] === this.playerGridPos[0] && this.ticketPickups[i][1] === this.playerGridPos[1]) {
+                this.collectTicketPickup(i);
+            }
+        }
+
         if (this.lavaCells.has(key)) {
             if (this.practice_mode) {
                 this.dataManager.data.practice_deaths = (this.dataManager.data.practice_deaths || 0) + 1;
@@ -1280,7 +1590,9 @@ class Game {
         const items = [];
 
         if (this.shopTab === "skins") {
-            for (const [k, v] of Object.entries(SKINS)) items.push([k, v, 'skin']);
+            for (const [k, v] of Object.entries(SKINS)) {
+                if (!v.gacha) items.push([k, v, 'skin']);
+            }
         } else if (this.shopTab === "trails") {
             for (const [k, v] of Object.entries(TRAILS)) items.push([k, v, 'trail']);
         } else if (this.shopTab === "moves") {
@@ -1294,13 +1606,19 @@ class Game {
             let unlocked, equipped, txt;
 
             if (cat === 'skin') {
-                if (item.level_req < 30) {
-                    unlocked = this.dataManager.data.high_level >= item.level_req;
+                if (item.gacha) {
+                    unlocked = this.dataManager.data.unlocked_gacha_skins.includes(key);
+                    equipped = this.dataManager.data.equipped_skin === key;
+                    txt = unlocked ? item.name : "GACHA";
                 } else {
-                    unlocked = Math.max(this.dataManager.data.high_level, this.dataManager.data.high_level_practice) >= item.level_req;
+                    if (item.level_req < 30) {
+                        unlocked = this.dataManager.data.high_level >= item.level_req;
+                    } else {
+                        unlocked = Math.max(this.dataManager.data.high_level, this.dataManager.data.high_level_practice) >= item.level_req;
+                    }
+                    equipped = this.dataManager.data.equipped_skin === key;
+                    txt = unlocked ? item.name : `LVL ${item.level_req}`;
                 }
-                equipped = this.dataManager.data.equipped_skin === key;
-                txt = unlocked ? item.name : `LVL ${item.level_req}`;
             } else if (cat === 'trail') {
                 unlocked = this.dataManager.data.unlocked_trails.includes(key);
                 equipped = this.dataManager.data.equipped_trail === key;
@@ -1321,14 +1639,14 @@ class Game {
                 const dm = this.dataManager;
                 if (c === 'skin') {
                     let unlocked = false;
-                    if (i.level_req < 30) {
+                    if (i.gacha) {
+                        unlocked = dm.data.unlocked_gacha_skins.includes(k);
+                    } else if (i.level_req < 30) {
                         unlocked = dm.data.high_level >= i.level_req;
                     } else {
                         unlocked = Math.max(dm.data.high_level, dm.data.high_level_practice) >= i.level_req;
                     }
-                    if (unlocked) {
-                        dm.data.equipped_skin = k;
-                    }
+                    if (unlocked) dm.data.equipped_skin = k;
                 } else if (c === 'trail') {
                     if (dm.data.unlocked_trails.includes(k)) {
                         dm.data.equipped_trail = k;
@@ -1611,6 +1929,16 @@ class Game {
             this.ctx.fillText('?', 0, 25);
             this.ctx.font = '12px Arial';
             this.ctx.fillText(`Tickets Spent: ${this.gachaAnim.spend}`, 0, 70);
+        } else if (this.gachaAnim.skinKey) {
+            const skin = SKINS[this.gachaAnim.skinKey];
+            const skinName = skin ? skin.name : "Gacha Skin";
+            this.ctx.font = 'bold 22px Arial';
+            this.ctx.fillText('NEW SKIN!', 0, -50);
+            this.ctx.font = 'bold 18px Arial';
+            this.ctx.fillText(skinName, 0, -10);
+            this.ctx.font = '12px Arial';
+            this.ctx.fillText('Added to inventory', 0, 20);
+            this.ctx.fillText(`Tickets Spent: ${this.gachaAnim.spend}`, 0, 70);
         } else if (this.gachaAnim.boostList.length) {
             const primary = this.gachaAnim.boostList[0];
             const boostName = this.getBoostName(primary);
@@ -1638,6 +1966,7 @@ class Game {
         this.ctx.restore();
         this.ctx.globalAlpha = 1;
     }
+
 
     draw() {
         const lvlSkinKey = this.dataManager.data.equipped_level_skin;
@@ -1798,7 +2127,7 @@ class Game {
             this.ctx.textAlign = 'left';
 
             if (this.missionsTab === "missions") {
-                const cardH = 110;
+                const cardH = 125;
                 const cardGap = 18;
                 const startY = panel.y + 90;
                 for (let i = 0; i < this.missions.length; i++) {
@@ -1820,17 +2149,17 @@ class Game {
                     this.ctx.fillText(mission.title, cardX + 14, cardY + 12);
 
                     this.ctx.font = '14px Arial';
-                    this.ctx.fillText(mission.description, cardX + 14, cardY + 40);
+                    this.ctx.fillText(mission.description, cardX + 14, cardY + 36);
 
                     const progressVal = Math.floor(mission.progress);
                     this.ctx.fillStyle = mission.completed ? 'rgb(0, 180, 0)' : `rgb(${cText.join(',')})`;
-                    this.ctx.fillText(`Progress: ${progressVal}/${mission.target}`, cardX + 14, cardY + 64);
+                    this.ctx.fillText(`Progress: ${progressVal}/${mission.target}`, cardX + 14, cardY + 72);
 
                     this.ctx.fillStyle = `rgb(${cText.join(',')})`;
-                    this.ctx.fillText(`Difficulty: ${mission.difficulty}`, cardX + 14, cardY + 84);
+                    this.ctx.fillText(`Difficulty: ${mission.difficulty}`, cardX + 14, cardY + 94);
 
                     this.ctx.textAlign = 'right';
-                    this.ctx.fillText(`Reward: ${mission.reward} tickets`, cardX + cardW - 16, cardY + 84);
+                    this.ctx.fillText(`Reward: ${mission.reward} tickets`, cardX + cardW - 16, cardY + 94);
                     this.ctx.textAlign = 'left';
                 }
             } else if (this.missionsTab === "gacha") {
@@ -1883,10 +2212,16 @@ class Game {
                 const listX = panel.x + 20;
                 const listW = panel.w - 40;
                 const listCount = Math.min(this.boosts.length, 6);
-                for (let i = 0; i < listCount; i++) {
-                    const boost = this.boosts[i];
+                const now = Date.now();
+                let animT = 1;
+                if (this.mergeAnim.active) {
+                    animT = Math.min(1, (now - this.mergeAnim.startAt) / this.mergeAnim.duration);
+                    if (animT >= 1) {
+                        this.mergeAnim.active = false;
+                    }
+                }
+                const drawBoostRow = (boost, rowY) => {
                     const isEquipped = this.equippedBoosts.includes(boost.id);
-                    const rowY = listStartY + i * rowH;
                     this.ctx.fillStyle = isEquipped ? 'rgb(0, 160, 0)' : `rgb(${cText.join(',')})`;
                     this.ctx.font = '12px Arial';
                     this.ctx.fillText(this.getBoostName(boost), listX, rowY + 4);
@@ -1894,6 +2229,83 @@ class Game {
                     this.ctx.fillText(this.getBoostDescription(boost), listX, rowY + 18);
 
                     const sellValue = this.getBoostSellValue(boost.level || 1);
+                    this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                    this.ctx.font = '10px Arial';
+                    this.ctx.textAlign = 'right';
+                    this.ctx.fillText(`Sell: ${sellValue}`, listX + listW - 10, rowY + 18);
+                    this.ctx.textAlign = 'left';
+                };
+
+                if (!this.mergeAnim.active) {
+                    for (let i = 0; i < listCount; i++) {
+                        const boost = this.boosts[i];
+                        const rowY = listStartY + i * rowH;
+                        drawBoostRow(boost, rowY);
+                    }
+                } else {
+                    const ease = animT * animT;
+                    const mergedResultIds = new Set(this.mergeAnim.mergeSteps.map(step => step.toId));
+                    const mergedSourceIds = new Set(this.mergeAnim.mergeSteps.flatMap(step => step.fromIds));
+
+                    for (let i = 0; i < listCount; i++) {
+                        const boost = this.boosts[i];
+                        if (mergedResultIds.has(boost.id)) continue;
+                        const rowY = listStartY + i * rowH;
+                        drawBoostRow(boost, rowY);
+                    }
+
+                    for (const step of this.mergeAnim.mergeSteps) {
+                        const [idA, idB] = step.fromIds;
+                        const boostA = this.mergeAnim.oldBoostById[idA];
+                        const boostB = this.mergeAnim.oldBoostById[idB];
+                        if (!boostA || !boostB) continue;
+                        const fromIndexA = this.mergeAnim.fromIndexMap[idA];
+                        const fromIndexB = this.mergeAnim.fromIndexMap[idB];
+                        const yA = listStartY + (fromIndexA ?? 0) * rowH;
+                        const yB = listStartY + (fromIndexB ?? 0) * rowH;
+                        const midY = (yA + yB) / 2;
+                        const drawYA = yA + (midY - yA) * ease;
+                        const drawYB = yB + (midY - yB) * ease;
+                        if (animT < 1) {
+                            drawBoostRow(boostA, drawYA);
+                            drawBoostRow(boostB, drawYB);
+                        }
+                    }
+
+                    if (animT >= 0.9) {
+                        const alpha = Math.min(1, (animT - 0.9) / 0.1);
+                        this.ctx.globalAlpha = alpha;
+                        for (let i = 0; i < listCount; i++) {
+                            const boost = this.boosts[i];
+                            if (!mergedResultIds.has(boost.id)) continue;
+                            const rowY = listStartY + i * rowH;
+                            drawBoostRow(boost, rowY);
+                        }
+                        this.ctx.globalAlpha = 1;
+                    }
+                }
+
+                const gachaSkins = this.dataManager.data.unlocked_gacha_skins || [];
+                const skinStartY = listStartY + listCount * rowH + 30;
+                const skinRowH = 44;
+                if (gachaSkins.length) {
+                    this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                    this.ctx.font = 'bold 12px Arial';
+                    this.ctx.fillText("GACHA SKINS", listX, skinStartY - 18);
+                }
+                const skinCount = Math.min(gachaSkins.length, 4);
+                for (let i = 0; i < skinCount; i++) {
+                    const skinKey = gachaSkins[i];
+                    const skin = SKINS[skinKey];
+                    const rowY = skinStartY + i * skinRowH;
+                    const isEquipped = this.dataManager.data.equipped_skin === skinKey;
+                    this.ctx.fillStyle = isEquipped ? 'rgb(0, 160, 0)' : `rgb(${cText.join(',')})`;
+                    this.ctx.font = '12px Arial';
+                    this.ctx.fillText(skin ? skin.name : skinKey, listX, rowY + 4);
+                    this.ctx.font = '10px Arial';
+                    this.ctx.fillText('Gacha Skin', listX, rowY + 18);
+
+                    const sellValue = this.getGachaSkinSellValue(skinKey);
                     this.ctx.fillStyle = `rgb(${cText.join(',')})`;
                     this.ctx.font = '10px Arial';
                     this.ctx.textAlign = 'right';
@@ -1940,6 +2352,9 @@ Press R to restart a level and go into practice mode
 Press space to pause the game
 In practice mode, pausing disables lava and allows you to map out the maze
 Collect blue pickups to freeze lava for time proportional to your current level
+Spin Gacha for random skins and boosts. Boosts can be equipped for various bonuses, or sold for tickets.
+Complete missions to earn tickets and unlock more gacha rewards
+Beat Level 20 to reroll missions and get new ones
 Press SPACE or ESC to go back`;
             this.drawMultilineTextCentered(infoText, 12, cText, 0, 20);
 
@@ -2040,6 +2455,24 @@ Press SPACE or ESC to go back`;
                              this.ctx.strokeStyle = 'rgb(255, 255, 255)';
                              this.ctx.lineWidth = 2;
                              this.ctx.strokeRect(x + this.tileW * 0.2, y + this.tileH * 0.2, this.tileW * 0.6, this.tileH * 0.6);
+                             break;
+                         }
+                    }
+
+                    for (const ticket of this.ticketPickups) {
+                         if (ticket && ticket[0] === r && ticket[1] === c) {
+                             this.ctx.fillStyle = 'rgb(255, 210, 80)';
+                             this.ctx.fillRect(x + this.tileW * 0.25, y + this.tileH * 0.25, this.tileW * 0.5, this.tileH * 0.5);
+                             this.ctx.strokeStyle = 'rgb(120, 80, 0)';
+                             this.ctx.lineWidth = 2;
+                             this.ctx.strokeRect(x + this.tileW * 0.25, y + this.tileH * 0.25, this.tileW * 0.5, this.tileH * 0.5);
+                             this.ctx.fillStyle = 'rgb(80, 50, 0)';
+                             this.ctx.font = 'bold 10px Arial';
+                             this.ctx.textAlign = 'center';
+                             this.ctx.textBaseline = 'middle';
+                             this.ctx.fillText('T', x + this.tileW * 0.5, y + this.tileH * 0.5);
+                             this.ctx.textAlign = 'left';
+                             this.ctx.textBaseline = 'alphabetic';
                              break;
                          }
                     }
@@ -2155,6 +2588,7 @@ Press SPACE or ESC to go back`;
         if (this.state === STATE_PLAYING) {
             if (!this.isPaused) {
                 this.updateMissionProgress("play_time", delta / 1000);
+                this.updateMissionProgress("styled_time", delta / 1000);
             }
             this.updatePlayerMovement();
             this.updateMisc();
@@ -2163,16 +2597,23 @@ Press SPACE or ESC to go back`;
 
             if (!this.isPaused && !this.isMoving && this.playerGridPos[0] === this.mazeGen.end[0] &&
                 this.playerGridPos[1] === this.mazeGen.end[1]) {
-                this.updateMissionProgress("complete_levels", 1);
                 if (this.practice_mode) {
                     this.updateMissionProgress("practice_levels", 1);
-                }
-                if (!this.practice_mode) {
+                } else {
+                    this.updateMissionProgress("complete_levels", 1);
                     this.dataManager.data.points += this.level * 10;
                 }
                 this.dataManager.save();
+                if (!this.practice_mode && this.level === 20) {
+                    const reroll = confirm("Reroll missions?");
+                    if (reroll) {
+                        this.rerollMissions();
+                    }
+                }
                 this.level++;
-                this.updateMissionProgress("reach_level", this.level, true);
+                if (!this.practice_mode) {
+                    this.updateMissionProgress("reach_level", this.level, true);
+                }
                 this.gameStartTime = Date.now();
                 this.initLevel();
             }
