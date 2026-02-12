@@ -14,6 +14,15 @@ class Game {
         if (!Array.isArray(this.dataManager.data.unlocked_gacha_skins)) {
             this.dataManager.data.unlocked_gacha_skins = [];
         }
+        if (!Array.isArray(this.dataManager.data.gacha_items)) {
+            this.dataManager.data.gacha_items = [];
+        }
+        if (!Array.isArray(this.dataManager.data.battle_team)) {
+            this.dataManager.data.battle_team = [];
+        }
+        if (!Number.isFinite(this.dataManager.data.battle_level)) {
+            this.dataManager.data.battle_level = 1;
+        }
        
         this.baseCols = 21;
         this.baseRows = 15;
@@ -49,6 +58,7 @@ class Game {
         this.menuButtons = [];
         this.shopButtons = [];
         this.missionButtons = [];
+        this.battleButtons = [];
         this.missions = [];
         this.missionTemplates = this.buildMissionTemplates();
         this.missionsTab = "missions";
@@ -57,7 +67,10 @@ class Game {
         this.boosts = Array.isArray(this.dataManager.data.boosts) ? this.dataManager.data.boosts : [];
         this.equippedBoosts = Array.isArray(this.dataManager.data.equipped_boosts) ? this.dataManager.data.equipped_boosts : [];
         this.gachaSpend = 10;
+        this.mergeSpend = 0;
+        this.itemMergeSpend = 0;
         this.isDraggingGachaSlider = false;
+        this.activeSlider = null;
         this.gachaAnim = {
             active: false,
             startAt: 0,
@@ -66,7 +79,42 @@ class Game {
             revealed: false,
             boostList: [],
             skinKey: null,
+            itemList: [],
+            rewardType: "boost",
             spend: 0
+        };
+        this.gachaItems = Array.isArray(this.dataManager.data.gacha_items) ? this.dataManager.data.gacha_items : [];
+        this.selectedGachaItemIds = new Set();
+        this.battleTeam = Array.isArray(this.dataManager.data.battle_team) ? this.dataManager.data.battle_team : [];
+        this.battleResult = "";
+        this.battleLevel = this.dataManager.data.battle_level || 1;
+        this.battleTab = "team";
+        this.battleState = {
+            inProgress: false,
+            startAt: 0,
+            duration: 4000,
+            enemies: [],
+            resolved: false,
+            pendingContinue: false,
+            nextBattleAt: 0,
+            turnIndex: 0,
+            turnStartedAt: 0,
+            turnDuration: 900,
+            playerHealths: null,
+            playerMaxHealths: null,
+            enemyHealths: null,
+            enemyMaxHealths: null,
+            autoTarget: false,
+            playerTargets: [0, 0, 0],
+            awaitingTarget: false,
+            pendingSkinIndex: 0,
+            attackAnim: {active: false, startAt: 0, duration: 380, attackerType: "player", attackerIndex: 0, defenderType: "enemy", defenderIndex: 0}
+        };
+        this.battleSelect = {
+            active: false,
+            slotIndex: 0,
+            type: "skin",
+            itemIndex: 0
         };
         this.ticketPickupSpawns = [];
         this.ticketPickups = [];
@@ -77,6 +125,7 @@ class Game {
             fromIndexMap: {},
             originIndex: 0
         };
+        this.selectedBoostIds = new Set();
 
         this.shakeOffset = [0, 0];
         this.lastMoveDir = [0, 0];
@@ -96,6 +145,7 @@ class Game {
         this.createMenuUI();
         this.initMissions();
         this.initBoosts();
+        this.initBattleTeam();
         this.initLevel();
        
         this.lastTime = Date.now();
@@ -108,11 +158,12 @@ class Game {
             const x = e.clientX - rect.left;
             const y = e.clientY - rect.top;
 
-            if (this.isDraggingGachaSlider && this.state === STATE_MISSIONS && this.missionsTab === "gacha" && !this.gachaAnim.active) {
-                this.updateGachaSliderFromX(x);
+            if (this.activeSlider && ((this.state === STATE_MISSIONS && ["gacha", "gacha_items", "inventory"].includes(this.missionsTab) && (!this.gachaAnim.active || this.missionsTab === "inventory"))
+                || (this.state === STATE_BATTLE && ["item_gacha", "items"].includes(this.battleTab)))) {
+                this.updateGachaSliderFromX(x, this.activeSlider);
             }
            
-            if ([STATE_MENU, STATE_SHOP, STATE_INFO, STATE_MISSIONS, STATE_GAMEOVER].includes(this.state)) {
+            if ([STATE_MENU, STATE_SHOP, STATE_INFO, STATE_MISSIONS, STATE_GAMEOVER, STATE_BATTLE].includes(this.state)) {
                 if (this.state === STATE_MISSIONS && this.gachaAnim.active) return;
                 const btnList = this.state === STATE_MENU
                     ? this.menuButtons
@@ -120,7 +171,9 @@ class Game {
                         ? this.infoButtons
                         : (this.state === STATE_MISSIONS
                             ? this.missionButtons
-                            : this.shopButtons));
+                            : (this.state === STATE_BATTLE
+                                ? this.battleButtons
+                                : this.shopButtons)));
                 btnList.forEach(btn => btn.checkHover(x, y));
             }
         });
@@ -130,32 +183,74 @@ class Game {
             const x = e.clientX - rect.left;
             const y = e.clientY - rect.top;
            
-            if ([STATE_MENU, STATE_SHOP, STATE_INFO, STATE_MISSIONS, STATE_GAMEOVER].includes(this.state)) {
+            if ([STATE_MENU, STATE_SHOP, STATE_INFO, STATE_MISSIONS, STATE_GAMEOVER, STATE_BATTLE].includes(this.state)) {
                 const btnList = this.state === STATE_MENU
                     ? this.menuButtons
                     : (this.state === STATE_INFO
                         ? this.infoButtons
                         : (this.state === STATE_MISSIONS
                             ? this.missionButtons
-                            : this.shopButtons));
-                btnList.forEach(btn => btn.checkClick(x, y));
+                            : (this.state === STATE_BATTLE
+                                ? this.battleButtons
+                                : this.shopButtons)));
+                if (this.state === STATE_BATTLE && this.battleState.inProgress) {
+                    btnList.filter(btn => ["LEAVE", "AUTO TARGET: ON", "AUTO TARGET: OFF"].includes(btn.text))
+                        .forEach(btn => btn.checkClick(x, y));
+                } else {
+                    btnList.forEach(btn => btn.checkClick(x, y));
+                }
+            }
+
+            if (this.state === STATE_MISSIONS && !this.gachaAnim.active) {
+                this.handleMissionListClick(x, y);
+            } else if (this.state === STATE_BATTLE && !this.battleState.inProgress && !this.battleSelect.active) {
+                this.handleBattleListClick(x, y);
+            } else if (this.state === STATE_BATTLE && this.battleState.inProgress) {
+                this.handleBattleFightClick(x, y);
             }
         });
 
         this.canvas.addEventListener('mousedown', (e) => {
-            if (this.state !== STATE_MISSIONS || this.missionsTab !== "gacha" || this.gachaAnim.active) return;
+            const inMissionTabs = this.state === STATE_MISSIONS && ["gacha", "gacha_items", "inventory"].includes(this.missionsTab);
+            const inBattleTabs = this.state === STATE_BATTLE && ["item_gacha", "items"].includes(this.battleTab);
+            if (!inMissionTabs && !inBattleTabs) return;
+            if (this.state === STATE_MISSIONS && this.gachaAnim.active && this.missionsTab !== "inventory") return;
             const rect = this.canvas.getBoundingClientRect();
             const x = e.clientX - rect.left;
             const y = e.clientY - rect.top;
-            const slider = this.getGachaSliderRect();
-            if (x >= slider.x && x <= slider.x + slider.w && y >= slider.y - 8 && y <= slider.y + slider.h + 8) {
-                this.isDraggingGachaSlider = true;
-                this.updateGachaSliderFromX(x);
+            if (this.state === STATE_BATTLE ? this.battleTab === "item_gacha" : true) {
+                const slider = this.state === STATE_BATTLE ? this.getBattleGachaSliderRect() : this.getGachaSliderRect();
+                if (x >= slider.x && x <= slider.x + slider.w && y >= slider.y - 8 && y <= slider.y + slider.h + 8) {
+                    this.isDraggingGachaSlider = true;
+                    if (this.state === STATE_BATTLE) {
+                        this.activeSlider = "gacha";
+                    } else {
+                        this.activeSlider = this.missionsTab === "inventory" ? "merge" : "gacha";
+                    }
+                    this.updateGachaSliderFromX(x, this.activeSlider);
+                    return;
+                }
+            }
+            if (this.state === STATE_MISSIONS && this.missionsTab === "gacha_items") {
+                const mergeSlider = this.getGachaItemMergeSliderRect();
+                if (x >= mergeSlider.x && x <= mergeSlider.x + mergeSlider.w && y >= mergeSlider.y - 8 && y <= mergeSlider.y + mergeSlider.h + 8) {
+                    this.isDraggingGachaSlider = true;
+                    this.activeSlider = "item_merge";
+                    this.updateGachaSliderFromX(x, this.activeSlider);
+                }
+            } else if (this.state === STATE_BATTLE && this.battleTab === "items") {
+                const mergeSlider = this.getBattleItemMergeSliderRect();
+                if (x >= mergeSlider.x && x <= mergeSlider.x + mergeSlider.w && y >= mergeSlider.y - 8 && y <= mergeSlider.y + mergeSlider.h + 8) {
+                    this.isDraggingGachaSlider = true;
+                    this.activeSlider = "item_merge";
+                    this.updateGachaSliderFromX(x, this.activeSlider);
+                }
             }
         });
 
         this.canvas.addEventListener('mouseup', () => {
             this.isDraggingGachaSlider = false;
+            this.activeSlider = null;
         });
 
         document.addEventListener('keydown', (e) => {
@@ -275,6 +370,97 @@ class Game {
         this.practiceGhostTrace = [];
     }
 
+    isPointInRect(x, y, rect) {
+        return x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
+    }
+
+    getMissionPanelRect() {
+        return {x: 40, y: 40, w: WINDOW_WIDTH - 80, h: WINDOW_HEIGHT - 80};
+    }
+
+    getBattlePanelRect() {
+        return {x: 60, y: 60, w: WINDOW_WIDTH - 120, h: WINDOW_HEIGHT - 120};
+    }
+
+    getGachaItemListLayout() {
+        const panel = this.getMissionPanelRect();
+        const listX = panel.x + 40;
+        const listY = panel.y + 350;
+        const rowH = 34;
+        const items = this.gachaItems.slice(-6).reverse();
+        return {panel, listX, listY, rowH, items};
+    }
+
+    getBattleGachaItemListLayout() {
+        const panel = this.getBattlePanelRect();
+        const listX = panel.x + 40;
+        const listY = panel.y + 230;
+        const rowH = 34;
+        const items = this.gachaItems.slice(-6).reverse();
+        return {panel, listX, listY, rowH, items};
+    }
+
+    getBoostListLayout() {
+        const panel = this.getMissionPanelRect();
+        const listX = panel.x + 20;
+        const listY = panel.y + 230;
+        const rowH = 52;
+        const listW = panel.w - 40;
+        const boosts = this.boosts.slice(0, 6);
+        return {panel, listX, listY, rowH, listW, boosts};
+    }
+
+    toggleGachaItemSelection(itemId) {
+        if (this.selectedGachaItemIds.has(itemId)) this.selectedGachaItemIds.delete(itemId);
+        else this.selectedGachaItemIds.add(itemId);
+        if (this.state === STATE_MISSIONS) {
+            this.createMissionUI();
+        } else if (this.state === STATE_BATTLE) {
+            this.createBattleUI();
+        }
+    }
+
+    toggleBoostSelection(boostId) {
+        if (this.selectedBoostIds.has(boostId)) this.selectedBoostIds.delete(boostId);
+        else this.selectedBoostIds.add(boostId);
+        if (this.state === STATE_MISSIONS) {
+            this.createMissionUI();
+        }
+    }
+
+    handleMissionListClick(x, y) {
+        if (this.missionsTab === "gacha_items") {
+            const {panel, listX, listY, rowH, items} = this.getGachaItemListLayout();
+            const sellBtnX = panel.x + panel.w - 140;
+            const sellBtnW = 80;
+            const sellBtnH = 22;
+            const rowMaxX = panel.x + panel.w - 160;
+            for (let i = 0; i < items.length; i++) {
+                const rowY = listY + i * rowH;
+                const rowRect = {x: listX - 6, y: rowY - 2, w: rowMaxX - (listX - 6), h: rowH};
+                const sellRect = {x: sellBtnX, y: rowY, w: sellBtnW, h: sellBtnH};
+                if (this.isPointInRect(x, y, sellRect)) return;
+                if (this.isPointInRect(x, y, rowRect)) {
+                    this.toggleGachaItemSelection(items[i].id);
+                    return;
+                }
+            }
+        } else if (this.missionsTab === "inventory" && !this.mergeAnim.active) {
+            const {listX, listY, rowH, listW, boosts} = this.getBoostListLayout();
+            for (let i = 0; i < boosts.length; i++) {
+                const rowY = listY + i * rowH;
+                const rowRect = {x: listX, y: rowY, w: listW, h: rowH};
+                const equipRect = {x: listX + listW - 210, y: rowY + 6, w: 90, h: 26};
+                const sellRect = {x: listX + listW - 110, y: rowY + 6, w: 90, h: 26};
+                if (this.isPointInRect(x, y, equipRect) || this.isPointInRect(x, y, sellRect)) return;
+                if (this.isPointInRect(x, y, rowRect)) {
+                    this.toggleBoostSelection(boosts[i].id);
+                    return;
+                }
+            }
+        }
+    }
+
     createMenuUI() {
         const btnW = 200, btnH = 50;
         const cx = WINDOW_WIDTH / 2 - btnW / 2;
@@ -283,6 +469,7 @@ class Game {
 
         this.menuButtons = [
             new Button("🎟️", 20, 20, 48, 48, () => this.openMissions(), "outline"),
+            new Button("🥊", 76, 20, 48, 48, () => this.openBattle(), "outline"),
             new Button("START", cx, startY, btnW, btnH, () => this.startGame(), "primary"),
             new Button("PRACTICE", cx, startY + spacing, btnW, btnH, () => this.startPractice(), "red_black"),
             new Button("SHOP", cx, startY + spacing * 2, btnW, btnH, () => this.openShop(), "outline"),
@@ -320,6 +507,14 @@ class Game {
         this.state = STATE_MISSIONS;
         if (!this.missionsTab) this.missionsTab = "missions";
         this.createMissionUI();
+        this.clearPracticeGhostTrace();
+    }
+
+    openBattle() {
+        this.state = STATE_BATTLE;
+        this.battleSelect.active = false;
+        if (!this.battleTab) this.battleTab = "team";
+        this.createBattleUI();
         this.clearPracticeGhostTrace();
     }
 
@@ -433,6 +628,150 @@ class Game {
         this.saveBoosts();
     }
 
+    saveGachaItems() {
+        this.dataManager.data.gacha_items = this.gachaItems;
+        this.dataManager.save();
+    }
+
+    getUnlockedSkinsList() {
+        const unlocked = [];
+        for (const [key, skin] of Object.entries(SKINS)) {
+            if (!skin) continue;
+            if (skin.gacha) {
+                if (this.dataManager.data.unlocked_gacha_skins.includes(key)) unlocked.push(key);
+            } else if (skin.level_req < 30) {
+                if (this.dataManager.data.high_level >= skin.level_req) unlocked.push(key);
+            } else {
+                if (Math.max(this.dataManager.data.high_level, this.dataManager.data.high_level_practice) >= skin.level_req) {
+                    unlocked.push(key);
+                }
+            }
+        }
+        if (!unlocked.includes("default")) unlocked.unshift("default");
+        return unlocked;
+    }
+
+    getOwnedGachaItemKeys() {
+        return this.gachaItems.map(item => item.type).filter(type => type && GACHA_ITEMS[type]);
+    }
+
+    rollGachaItem(spend) {
+        const pool = Object.keys(GACHA_ITEMS);
+        const itemKey = pool[Math.floor(Math.random() * pool.length)] || "charm_spark";
+        const level = this.getGachaBoostLevel(spend);
+        return {
+            id: `${Date.now()}_${Math.floor(Math.random() * 100000)}`,
+            type: itemKey,
+            level
+        };
+    }
+
+    getExpectedGachaItemValue(spend) {
+        const items = Object.values(GACHA_ITEMS);
+        const avgPower = items.length ? items.reduce((sum, item) => sum + item.power, 0) / items.length : 1;
+        const probs = this.getGachaBoostProbabilities(spend);
+        const expectedLevel = probs.reduce((sum, p, idx) => sum + p * (idx + 1), 0);
+        return Math.max(1, avgPower * expectedLevel);
+    }
+
+    rollGachaItemRewards(spend) {
+        const expectedValue = this.getExpectedGachaItemValue(spend);
+        const targetRatio = this.getGachaTargetReturnRatio(spend);
+        const chance = Math.min(0.98, (targetRatio * spend) / expectedValue);
+        if (Math.random() > chance) return [];
+        return [this.rollGachaItem(spend)];
+    }
+
+    spinGachaItem(amount) {
+        const tickets = this.dataManager.data.tickets || 0;
+        const spend = Math.max(0, Math.min(amount, tickets));
+        if (spend <= 0 || this.gachaAnim.active) return;
+        this.dataManager.data.tickets = tickets - spend;
+        this.dataManager.save();
+        if (this.dataManager.data.tickets <= 0) {
+            this.gachaSpend = 0;
+        } else {
+            this.gachaSpend = Math.min(this.gachaSpend, this.dataManager.data.tickets);
+        }
+
+        const itemList = this.rollGachaItemRewards(spend);
+        this.startGachaAnimation(spend, {itemList, rewardType: "item"});
+    }
+
+    getGachaItemSellValue(itemKey, level = 1) {
+        const safeLevel = Math.max(1, level || 1);
+        return Math.max(3, Math.round(3 + safeLevel * 4));
+    }
+
+    sellGachaItem(itemId) {
+        const idx = this.gachaItems.findIndex(item => item.id === itemId);
+        if (idx === -1) return;
+        const item = this.gachaItems[idx];
+        const value = this.getGachaItemSellValue(item.type, item.level || 1);
+        this.dataManager.data.tickets = (this.dataManager.data.tickets || 0) + value;
+        this.gachaItems.splice(idx, 1);
+        this.selectedGachaItemIds.delete(itemId);
+        this.saveGachaItems();
+        this.createMissionUI();
+    }
+
+    mergeGachaItems() {
+        let merged = false;
+        const selectedIds = new Set(this.selectedGachaItemIds);
+        const candidates = selectedIds.size
+            ? this.gachaItems.filter(item => selectedIds.has(item.id))
+            : [];
+        if (candidates.length < 2) return;
+        const tickets = this.dataManager.data.tickets || 0;
+        const spend = Math.max(0, Math.min(this.itemMergeSpend || 0, tickets));
+        const byType = {};
+        for (const item of candidates) {
+            if (!byType[item.type]) byType[item.type] = [];
+            byType[item.type].push(item);
+        }
+        let mergeCount = 0;
+        for (const type of Object.keys(byType)) {
+            mergeCount += Math.floor(byType[type].length / 2);
+        }
+        const bonusPerMerge = mergeCount > 0 ? (spend / mergeCount) : 0;
+
+        const newItems = [];
+        const usedIds = new Set();
+        for (const type of Object.keys(byType)) {
+            const group = byType[type].slice().sort((a, b) => (b.level || 1) - (a.level || 1));
+            while (group.length >= 2) {
+                const a = group.shift();
+                const b = group.shift();
+                if (usedIds.has(a.id) || usedIds.has(b.id)) continue;
+                usedIds.add(a.id);
+                usedIds.add(b.id);
+                const newLevel = this.rollMergedBoostLevel([a.level || 1, b.level || 1], bonusPerMerge);
+                newItems.push({id: `${Date.now()}_${Math.floor(Math.random() * 100000)}`, type, level: newLevel});
+                merged = true;
+            }
+        }
+
+        if (merged) {
+            this.gachaItems = this.gachaItems.filter(it => !usedIds.has(it.id));
+            this.gachaItems.push(...newItems);
+            this.selectedGachaItemIds.clear();
+            if (spend > 0) {
+                this.dataManager.data.tickets = tickets - spend;
+                this.dataManager.save();
+            }
+            if (this.dataManager.data.tickets <= 0) {
+                this.itemMergeSpend = 0;
+            } else {
+                this.itemMergeSpend = Math.min(this.itemMergeSpend, this.dataManager.data.tickets);
+            }
+            this.saveGachaItems();
+            this.createMissionUI();
+            if (this.state === STATE_BATTLE) {
+                this.createBattleUI();
+            }
+        }
+    }
+
     saveBoosts() {
         this.dataManager.data.boosts = this.boosts;
         this.dataManager.data.equipped_boosts = this.equippedBoosts;
@@ -492,13 +831,41 @@ class Game {
         return {x: panel.x + 60, y: panel.y + 150, w: panel.w - 120, h: 10};
     }
 
-    updateGachaSliderFromX(x) {
-        const slider = this.getGachaSliderRect();
-        const minValue = 1;
-        const maxValue = Math.max(1, this.dataManager.data.tickets || 0);
+    getBattleGachaSliderRect() {
+        const panel = this.getBattlePanelRect();
+        return {x: panel.x + 60, y: panel.y + 150, w: panel.w - 120, h: 10};
+    }
+
+    getGachaItemMergeSliderRect() {
+        const panel = {x: 40, y: 40, w: WINDOW_WIDTH - 80, h: WINDOW_HEIGHT - 80};
+        return {x: panel.x + 60, y: panel.y + 300, w: panel.w - 120, h: 10};
+    }
+
+    getBattleItemMergeSliderRect() {
+        const panel = this.getBattlePanelRect();
+        return {x: panel.x + 60, y: panel.y + 175, w: panel.w - 120, h: 10};
+    }
+
+    updateGachaSliderFromX(x, sliderType = null) {
+        const tickets = this.dataManager.data.tickets || 0;
+        const type = sliderType || this.activeSlider || "gacha";
+        const slider = type === "item_merge"
+            ? (this.state === STATE_BATTLE ? this.getBattleItemMergeSliderRect() : this.getGachaItemMergeSliderRect())
+            : (this.state === STATE_BATTLE ? this.getBattleGachaSliderRect() : this.getGachaSliderRect());
+        const isMerge = this.state === STATE_MISSIONS && this.missionsTab === "inventory" && type === "merge";
+        const isItemMerge = (this.state === STATE_MISSIONS && this.missionsTab === "gacha_items" && type === "item_merge")
+            || (this.state === STATE_BATTLE && this.battleTab === "items" && type === "item_merge");
+        const minValue = (isMerge || isItemMerge) ? 0 : (tickets > 0 ? 1 : 0);
+        const maxValue = (isMerge || isItemMerge) ? Math.max(0, tickets) : Math.max(1, tickets);
         const pct = Math.max(0, Math.min(1, (x - slider.x) / slider.w));
         const value = Math.round(minValue + pct * (maxValue - minValue));
-        this.gachaSpend = Math.max(0, Math.min(value, maxValue));
+        if (isMerge) {
+            this.mergeSpend = Math.max(minValue, Math.min(value, maxValue));
+        } else if (isItemMerge) {
+            this.itemMergeSpend = Math.max(minValue, Math.min(value, maxValue));
+        } else {
+            this.gachaSpend = Math.max(minValue, Math.min(value, maxValue));
+        }
     }
 
     spinGacha(amount) {
@@ -528,6 +895,8 @@ class Game {
             revealed: false,
             boostList: Array.isArray(reward?.boostList) ? reward.boostList : [],
             skinKey: reward?.skinKey || null,
+            itemList: Array.isArray(reward?.itemList) ? reward.itemList : [],
+            rewardType: reward?.rewardType || (reward?.itemList ? "item" : (reward?.skinKey ? "skin" : "boost")),
             spend
         };
     }
@@ -543,6 +912,9 @@ class Game {
                 }
                 this.dataManager.save();
                 this.createMissionUI();
+                if (this.state === STATE_BATTLE) {
+                    this.createBattleUI();
+                }
             }
             if (this.gachaAnim.boostList.length) {
                 for (const boost of this.gachaAnim.boostList) {
@@ -550,12 +922,25 @@ class Game {
                 }
                 this.saveBoosts();
                 this.createMissionUI();
+                if (this.state === STATE_BATTLE) {
+                    this.createBattleUI();
+                }
+            }
+            if (this.gachaAnim.itemList.length) {
+                this.gachaItems.push(...this.gachaAnim.itemList);
+                this.saveGachaItems();
+                this.createMissionUI();
+                if (this.state === STATE_BATTLE) {
+                    this.createBattleUI();
+                }
             }
         }
         if (now >= this.gachaAnim.endAt) {
             this.gachaAnim.active = false;
             this.gachaAnim.boostList = [];
             this.gachaAnim.skinKey = null;
+            this.gachaAnim.itemList = [];
+            this.gachaAnim.rewardType = "boost";
             this.gachaAnim.spend = 0;
             this.gachaAnim.revealed = false;
         }
@@ -618,21 +1003,13 @@ class Game {
         if (expectedBoostValue <= 0) return [];
 
         const targetRatio = this.getGachaTargetReturnRatio(spend);
-        const expectedRolls = (targetRatio * spend) / expectedBoostValue;
-        const rolls = Math.floor(expectedRolls);
-        const bonusChance = expectedRolls - rolls;
-        const totalRolls = rolls + (Math.random() < bonusChance ? 1 : 0);
-
-        if (totalRolls <= 0) return [];
+        const chance = Math.min(0.98, (targetRatio * spend) / expectedBoostValue);
+        if (Math.random() > chance) return [];
 
         const types = Object.keys(this.boostTemplates);
-        const boosts = [];
-        for (let i = 0; i < totalRolls; i++) {
-            const level = this.getGachaBoostLevel(spend);
-            const type = types[Math.floor(Math.random() * types.length)];
-            boosts.push({type, level});
-        }
-        return boosts;
+        const level = this.getGachaBoostLevel(spend);
+        const type = types[Math.floor(Math.random() * types.length)];
+        return [{type, level}];
     }
 
     getGachaBoostLevel(spend) {
@@ -641,11 +1018,16 @@ class Game {
         const thresholds = [0.55, 0.82, 0.94, 0.985];
         const bonus = power * 0.25;
         const adj = thresholds.map(t => Math.max(0.15, t - bonus));
-        if (roll < adj[0]) return 1;
-        if (roll < adj[1]) return 2;
-        if (roll < adj[2]) return 3;
-        if (roll < adj[3]) return 4;
-        return 5;
+        let baseLevel = 1;
+        if (roll < adj[0]) baseLevel = 1;
+        else if (roll < adj[1]) baseLevel = 2;
+        else if (roll < adj[2]) baseLevel = 3;
+        else if (roll < adj[3]) baseLevel = 4;
+        else baseLevel = 5;
+
+        const extra = Math.max(0, Math.floor(Math.log10(spend + 1)) - 1);
+        const minLevel = 1 + Math.floor(Math.log10(spend + 1));
+        return Math.max(baseLevel + extra, minLevel);
     }
 
     addBoost({type, level}) {
@@ -656,28 +1038,40 @@ class Game {
         });
     }
 
-    mergeBoosts() {
+    mergeBoosts(selectedIds = null, ticketSpend = 0) {
         const oldBoosts = this.boosts.slice();
         const mergeSteps = [];
+        const selectedSet = selectedIds ? new Set(selectedIds) : null;
+        const candidates = selectedSet ? this.boosts.filter(b => selectedSet.has(b.id)) : [];
+
+        if (selectedSet && candidates.length < 2) {
+            return {merged: false, oldBoosts, newBoosts: this.boosts.slice(), mergeSteps};
+        }
+
         const byType = {};
-        for (const boost of this.boosts) {
+        for (const boost of candidates) {
             if (!byType[boost.type]) byType[boost.type] = [];
             byType[boost.type].push(boost);
         }
 
         let merged = false;
+        let mergeCount = 0;
+        for (const type of Object.keys(byType)) {
+            const groupSize = byType[type].length;
+            if (groupSize >= 2) mergeCount += (groupSize - 1);
+        }
+        const bonusPerMerge = mergeCount > 0 ? (ticketSpend / mergeCount) : 0;
         for (const type of Object.keys(byType)) {
             const group = byType[type].slice().sort((a, b) => (b.level || 1) - (a.level || 1));
             if (group.length < 2) continue;
 
-            for (const boost of group) {
-                this.boosts = this.boosts.filter(b => b.id !== boost.id);
-            }
+            const removeIds = new Set(group.map(boost => boost.id));
+            this.boosts = this.boosts.filter(b => !removeIds.has(b.id));
 
             while (group.length >= 2) {
                 const b1 = group.shift();
                 const b2 = group.shift();
-                const mergedLevel = this.rollMergedBoostLevel([b1.level || 1, b2.level || 1]);
+                const mergedLevel = this.rollMergedBoostLevel([b1.level || 1, b2.level || 1], bonusPerMerge);
                 const mergedBoost = {id: `${Date.now()}_${Math.floor(Math.random() * 100000)}`, type, level: mergedLevel};
                 mergeSteps.push({fromIds: [b1.id, b2.id], toId: mergedBoost.id});
                 group.push(mergedBoost);
@@ -705,8 +1099,8 @@ class Game {
         return {merged, oldBoosts, newBoosts: this.boosts.slice(), mergeSteps};
     }
 
-    rollMergedBoostLevel(levels) {
-        const totalValue = levels.reduce((sum, lvl) => sum + Math.pow(2, Math.max(1, lvl)), 0);
+    rollMergedBoostLevel(levels, bonusValue = 0) {
+        const totalValue = levels.reduce((sum, lvl) => sum + Math.pow(2, Math.max(1, lvl)), 0) + Math.max(0, bonusValue);
         let remaining = totalValue;
         let achieved = 0;
         for (let lvl = 1; lvl <= 10; lvl++) {
@@ -723,8 +1117,22 @@ class Game {
 
     startMergeAnimation() {
         if (this.mergeAnim.active) return;
-        const {merged, oldBoosts, newBoosts, mergeSteps} = this.mergeBoosts();
+        const tickets = this.dataManager.data.tickets || 0;
+        const spend = Math.max(0, Math.min(this.mergeSpend || 0, tickets));
+        const {merged, oldBoosts, newBoosts, mergeSteps} = this.mergeBoosts(this.selectedBoostIds, spend);
         if (!merged) return;
+
+        if (spend > 0) {
+            this.dataManager.data.tickets = tickets - spend;
+            this.dataManager.save();
+        }
+
+        this.selectedBoostIds.clear();
+        if (this.dataManager.data.tickets <= 0) {
+            this.mergeSpend = 0;
+        } else {
+            this.mergeSpend = Math.min(this.mergeSpend, this.dataManager.data.tickets);
+        }
 
         const fromIndexMap = {};
         const oldBoostById = {};
@@ -775,6 +1183,7 @@ class Game {
         const value = this.getBoostSellValue(boost.level || 1);
         this.dataManager.data.tickets = (this.dataManager.data.tickets || 0) + value;
         this.boosts.splice(idx, 1);
+        this.selectedBoostIds.delete(boostId);
         this.equippedBoosts = this.equippedBoosts.filter(id => id !== boostId);
         this.saveBoosts();
         if (this.state === STATE_MISSIONS) {
@@ -988,6 +1397,10 @@ class Game {
         this.missionButtons = [];
         const panel = {x: 40, y: 40, w: WINDOW_WIDTH - 80, h: WINDOW_HEIGHT - 80};
 
+        if (this.missionsTab === "gacha_items") {
+            this.missionsTab = "gacha";
+        }
+
         this.missionButtons.push(new Button("BACK", panel.x + 20, panel.y + 20, 80, 40,
             () => { this.state = STATE_MENU; this.clearPracticeGhostTrace(); }, "outline"));
 
@@ -996,7 +1409,12 @@ class Game {
         for (const [label, key] of tabs) {
             const style = this.missionsTab === key ? "primary" : "outline";
             this.missionButtons.push(new Button(label, tabX, panel.y + 20, 120, 40,
-                () => { this.missionsTab = key; this.createMissionUI(); }, style));
+                () => {
+                    this.missionsTab = key;
+                    this.selectedGachaItemIds.clear();
+                    this.selectedBoostIds.clear();
+                    this.createMissionUI();
+                }, style));
             tabX += 130;
         }
 
@@ -1033,12 +1451,43 @@ class Game {
             const spinY = panel.y + 210;
             this.missionButtons.push(new Button("SPIN", spinX, spinY, spinW, 44,
                 () => this.spinGacha(this.gachaSpend || 0), "primary"));
+        } else if (this.missionsTab === "gacha_items") {
+            const tickets = this.dataManager.data.tickets || 0;
+            if (tickets > 0) {
+                if (!this.gachaSpend || this.gachaSpend < 1) {
+                    this.gachaSpend = Math.min(10, tickets);
+                }
+            } else {
+                this.gachaSpend = 0;
+            }
+            this.itemMergeSpend = Math.max(0, Math.min(this.itemMergeSpend || 0, tickets));
+
+            const spinX = panel.x + 60;
+            const spinW = panel.w - 120;
+            const spinY = panel.y + 210;
+            this.missionButtons.push(new Button("SPIN ITEM", spinX, spinY, spinW, 44,
+                () => this.spinGachaItem(this.gachaSpend || 0), "primary"));
+
+            const mergeItemsAction = this.selectedGachaItemIds.size >= 2 ? () => this.mergeGachaItems() : null;
+            this.missionButtons.push(new Button("MERGE ITEMS", spinX, spinY + 60, spinW, 36,
+                mergeItemsAction, "outline"));
+
+            const listY = panel.y + 350;
+            const owned = this.gachaItems.slice(-6).reverse();
+            for (let i = 0; i < owned.length; i++) {
+                const item = owned[i];
+                const btnY = listY + i * 26;
+                this.missionButtons.push(new Button("SELL", panel.x + panel.w - 140, btnY, 80, 22,
+                    () => this.sellGachaItem(item.id), "danger"));
+            }
         } else if (this.missionsTab === "inventory") {
-            const listStartY = panel.y + 140;
+            const tickets = this.dataManager.data.tickets || 0;
+            this.mergeSpend = Math.max(0, Math.min(this.mergeSpend || 0, tickets));
+            const listStartY = panel.y + 230;
             const rowH = 52;
             const listX = panel.x + 20;
             const listW = panel.w - 40;
-            const mergeAction = this.mergeAnim.active ? null : () => this.startMergeAnimation();
+            const mergeAction = (this.mergeAnim.active || this.selectedBoostIds.size < 2) ? null : () => this.startMergeAnimation();
             const mergeStyle = this.mergeAnim.active ? "outline" : "outline";
             this.missionButtons.push(new Button("MERGE", panel.x + panel.w - 120, panel.y + 20, 90, 40,
                 mergeAction, mergeStyle));
@@ -1939,6 +2388,22 @@ class Game {
             this.ctx.font = '12px Arial';
             this.ctx.fillText('Added to inventory', 0, 20);
             this.ctx.fillText(`Tickets Spent: ${this.gachaAnim.spend}`, 0, 70);
+        } else if (this.gachaAnim.itemList.length) {
+            const primary = this.gachaAnim.itemList[0];
+            const meta = GACHA_ITEMS[primary.type];
+            const itemName = meta ? meta.name : primary.type;
+            const itemLevel = primary.level || 1;
+            const extraCount = this.gachaAnim.itemList.length - 1;
+            this.ctx.font = 'bold 22px Arial';
+            this.ctx.fillText('NEW ITEM!', 0, -50);
+            this.ctx.font = 'bold 18px Arial';
+            this.ctx.fillText(`${itemName} Lv.${itemLevel}`, 0, -10);
+            this.ctx.font = '12px Arial';
+            if (extraCount > 0) {
+                this.ctx.fillText(`+${extraCount} more`, 0, 36);
+            }
+            this.ctx.font = '12px Arial';
+            this.ctx.fillText(`Tickets Spent: ${this.gachaAnim.spend}`, 0, 70);
         } else if (this.gachaAnim.boostList.length) {
             const primary = this.gachaAnim.boostList[0];
             const boostName = this.getBoostName(primary);
@@ -1956,8 +2421,9 @@ class Game {
             this.ctx.font = '12px Arial';
             this.ctx.fillText(`Tickets Spent: ${this.gachaAnim.spend}`, 0, 70);
         } else {
+            const label = this.gachaAnim.rewardType === "item" ? "NO ITEM" : "NO BOOST";
             this.ctx.font = 'bold 22px Arial';
-            this.ctx.fillText('NO BOOST', 0, -20);
+            this.ctx.fillText(label, 0, -20);
             this.ctx.font = '12px Arial';
             this.ctx.fillText('Try again!', 0, 20);
             this.ctx.fillText(`Tickets Spent: ${this.gachaAnim.spend}`, 0, 70);
@@ -2197,6 +2663,102 @@ class Game {
                 this.ctx.textAlign = 'right';
                 this.ctx.fillText(`Max: ${tickets}`, slider.x + slider.w, slider.y + 18);
                 this.ctx.textAlign = 'left';
+            } else if (this.missionsTab === "gacha_items") {
+                this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                this.ctx.font = 'bold 20px Arial';
+                this.ctx.textAlign = 'left';
+                this.ctx.textBaseline = 'top';
+                this.ctx.fillText("GACHA ITEMS", panel.x + 40, panel.y + 90);
+                this.ctx.font = '12px Arial';
+                this.ctx.fillText("Spend tickets to pull battle items", panel.x + 40, panel.y + 118);
+
+                const slider = this.getGachaSliderRect();
+                const tickets = this.dataManager.data.tickets || 0;
+                const minValue = tickets > 0 ? 1 : 0;
+                const maxValue = Math.max(1, tickets);
+                if (tickets === 0) this.gachaSpend = 0;
+
+                this.ctx.strokeStyle = `rgb(${cBorder.join(',')})`;
+                this.ctx.lineWidth = 2;
+                this.ctx.beginPath();
+                this.ctx.moveTo(slider.x, slider.y + slider.h / 2);
+                this.ctx.lineTo(slider.x + slider.w, slider.y + slider.h / 2);
+                this.ctx.stroke();
+
+                const pct = maxValue === minValue ? 0 : (this.gachaSpend - minValue) / (maxValue - minValue);
+                const knobX = slider.x + slider.w * Math.max(0, Math.min(1, pct));
+                this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                this.ctx.beginPath();
+                this.ctx.arc(knobX, slider.y + slider.h / 2, 8, 0, Math.PI * 2);
+                this.ctx.fill();
+
+                this.ctx.font = '12px Arial';
+                this.ctx.textAlign = 'left';
+                this.ctx.fillText(`Spend: ${this.gachaSpend}`, slider.x, slider.y + 18);
+                this.ctx.textAlign = 'right';
+                this.ctx.fillText(`Max: ${tickets}`, slider.x + slider.w, slider.y + 18);
+                this.ctx.textAlign = 'left';
+
+                this.ctx.font = 'bold 14px Arial';
+                this.ctx.fillText("MERGE ITEMS", panel.x + 40, panel.y + 245);
+                this.ctx.font = '12px Arial';
+                this.ctx.fillText("Spend tickets to power item merges (1 ticket = 1 value)", panel.x + 40, panel.y + 265);
+
+                const mergeSlider = this.getGachaItemMergeSliderRect();
+                const mergeMinValue = 0;
+                const mergeMaxValue = Math.max(0, tickets);
+                if (tickets === 0) this.itemMergeSpend = 0;
+
+                this.ctx.strokeStyle = `rgb(${cBorder.join(',')})`;
+                this.ctx.lineWidth = 2;
+                this.ctx.beginPath();
+                this.ctx.moveTo(mergeSlider.x, mergeSlider.y + mergeSlider.h / 2);
+                this.ctx.lineTo(mergeSlider.x + mergeSlider.w, mergeSlider.y + mergeSlider.h / 2);
+                this.ctx.stroke();
+
+                const mergePct = mergeMaxValue === mergeMinValue ? 0 : (this.itemMergeSpend - mergeMinValue) / (mergeMaxValue - mergeMinValue);
+                const mergeKnobX = mergeSlider.x + mergeSlider.w * Math.max(0, Math.min(1, mergePct));
+                this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                this.ctx.beginPath();
+                this.ctx.arc(mergeKnobX, mergeSlider.y + mergeSlider.h / 2, 8, 0, Math.PI * 2);
+                this.ctx.fill();
+
+                this.ctx.font = '12px Arial';
+                this.ctx.textAlign = 'left';
+                this.ctx.fillText(`Spend: ${this.itemMergeSpend}`, mergeSlider.x, mergeSlider.y + 18);
+                this.ctx.textAlign = 'right';
+                this.ctx.fillText(`Max: ${tickets}`, mergeSlider.x + mergeSlider.w, mergeSlider.y + 18);
+                this.ctx.textAlign = 'left';
+
+                const listX = panel.x + 40;
+                const listY = panel.y + 350;
+                const rowH = 34;
+                const owned = this.gachaItems.slice(-6).reverse();
+                this.ctx.font = '12px Arial';
+                for (let i = 0; i < owned.length; i++) {
+                    const item = owned[i];
+                    const meta = GACHA_ITEMS[item.type];
+                    const label = meta ? `${meta.name} Lv.${item.level || 1}` : item.type;
+                    if (this.selectedGachaItemIds.has(item.id)) {
+                        const highlightX = listX - 6;
+                        const highlightY = listY + i * rowH - 2;
+                        const highlightW = panel.x + panel.w - 160 - highlightX;
+                        this.ctx.fillStyle = 'rgba(0, 120, 255, 0.2)';
+                        this.ctx.fillRect(highlightX, highlightY, Math.max(0, highlightW), rowH);
+                        this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                    }
+                    this.ctx.fillText(label, listX, listY + i * rowH);
+                    const sub = this.getItemEffectSummary(item.type, item.level || 1);
+                    if (sub) {
+                        this.ctx.font = '10px Arial';
+                        this.ctx.fillText(sub, listX, listY + i * rowH + 12);
+                        this.ctx.font = '12px Arial';
+                    }
+                    const sellValue = this.getGachaItemSellValue(item.type, item.level || 1);
+                    this.ctx.textAlign = 'right';
+                    this.ctx.fillText(`Sell: ${sellValue}`, panel.x + panel.w - 10, listY + i * rowH);
+                    this.ctx.textAlign = 'left';
+                }
             } else if (this.missionsTab === "inventory") {
                 this.ctx.fillStyle = `rgb(${cText.join(',')})`;
                 this.ctx.font = 'bold 18px Arial';
@@ -2207,7 +2769,39 @@ class Game {
                 this.ctx.font = '12px Arial';
                 this.ctx.fillText(`Equipped: ${this.equippedBoosts.length}/3`, panel.x + 20, panel.y + 102);
 
-                const listStartY = panel.y + 160;
+                this.ctx.font = 'bold 16px Arial';
+                this.ctx.fillText("MERGE BOOSTS", panel.x + 20, panel.y + 120);
+                this.ctx.font = '12px Arial';
+                this.ctx.fillText("Spend tickets to power merges (1 ticket = 1 value)", panel.x + 20, panel.y + 140);
+
+                const slider = this.getGachaSliderRect();
+                const tickets = this.dataManager.data.tickets || 0;
+                const minValue = 0;
+                const maxValue = Math.max(0, tickets);
+                if (tickets === 0) this.mergeSpend = 0;
+
+                this.ctx.strokeStyle = `rgb(${cBorder.join(',')})`;
+                this.ctx.lineWidth = 2;
+                this.ctx.beginPath();
+                this.ctx.moveTo(slider.x, slider.y + slider.h / 2);
+                this.ctx.lineTo(slider.x + slider.w, slider.y + slider.h / 2);
+                this.ctx.stroke();
+
+                const pct = maxValue === minValue ? 0 : (this.mergeSpend - minValue) / (maxValue - minValue);
+                const knobX = slider.x + slider.w * Math.max(0, Math.min(1, pct));
+                this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                this.ctx.beginPath();
+                this.ctx.arc(knobX, slider.y + slider.h / 2, 8, 0, Math.PI * 2);
+                this.ctx.fill();
+
+                this.ctx.font = '12px Arial';
+                this.ctx.textAlign = 'left';
+                this.ctx.fillText(`Spend: ${this.mergeSpend}`, slider.x, slider.y + 18);
+                this.ctx.textAlign = 'right';
+                this.ctx.fillText(`Max: ${tickets}`, slider.x + slider.w, slider.y + 18);
+                this.ctx.textAlign = 'left';
+
+                const listStartY = panel.y + 230;
                 const rowH = 52;
                 const listX = panel.x + 20;
                 const listW = panel.w - 40;
@@ -2221,6 +2815,10 @@ class Game {
                     }
                 }
                 const drawBoostRow = (boost, rowY) => {
+                    if (this.selectedBoostIds.has(boost.id)) {
+                        this.ctx.fillStyle = 'rgba(0, 120, 255, 0.2)';
+                        this.ctx.fillRect(listX, rowY - 2, listW, rowH);
+                    }
                     const isEquipped = this.equippedBoosts.includes(boost.id);
                     this.ctx.fillStyle = isEquipped ? 'rgb(0, 160, 0)' : `rgb(${cText.join(',')})`;
                     this.ctx.font = '12px Arial';
@@ -2232,7 +2830,7 @@ class Game {
                     this.ctx.fillStyle = `rgb(${cText.join(',')})`;
                     this.ctx.font = '10px Arial';
                     this.ctx.textAlign = 'right';
-                    this.ctx.fillText(`Sell: ${sellValue}`, listX + listW - 10, rowY + 18);
+                    this.ctx.fillText(`Sell: ${sellValue}`, panel.x + panel.w - 10, rowY + 18);
                     this.ctx.textAlign = 'left';
                 };
 
@@ -2309,7 +2907,7 @@ class Game {
                     this.ctx.fillStyle = `rgb(${cText.join(',')})`;
                     this.ctx.font = '10px Arial';
                     this.ctx.textAlign = 'right';
-                    this.ctx.fillText(`Sell: ${sellValue}`, listX + listW - 10, rowY + 18);
+                    this.ctx.fillText(`Sell: ${sellValue}`, panel.x + panel.w - 10, rowY + 18);
                     this.ctx.textAlign = 'left';
                 }
             }
@@ -2328,6 +2926,291 @@ class Game {
                 text: cText,
                 border: cBorder
             });
+        } else if (this.state === STATE_BATTLE) {
+            for (let i = 0; i < WINDOW_WIDTH; i += 40) {
+                this.ctx.strokeStyle = `rgb(${cFloor.join(',')})`;
+                this.ctx.lineWidth = 1;
+                this.ctx.beginPath();
+                this.ctx.moveTo(i, 0);
+                this.ctx.lineTo(i, WINDOW_HEIGHT);
+                this.ctx.stroke();
+            }
+
+            const panel = {x: 60, y: 60, w: WINDOW_WIDTH - 120, h: WINDOW_HEIGHT - 120};
+            this.ctx.fillStyle = `rgb(${cBg.join(',')})`;
+            this.ctx.fillRect(panel.x, panel.y, panel.w, panel.h);
+            this.ctx.strokeStyle = `rgb(${cBorder.join(',')})`;
+            this.ctx.lineWidth = 3;
+            this.ctx.strokeRect(panel.x, panel.y, panel.w, panel.h);
+
+            this.drawTextCentered("AUTO BATTLE", 36, cText, -230);
+            this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+            this.ctx.font = '12px Arial';
+            this.ctx.textAlign = 'left';
+            this.ctx.textBaseline = 'top';
+
+            if (this.battleState.inProgress) {
+                this.ctx.font = 'bold 12px Arial';
+                this.ctx.fillText(`Level: ${this.battleLevel}`, panel.x + 20, panel.y + 58);
+                this.ctx.font = '12px Arial';
+            }
+
+            // Hide equipped summary text between battles and during selection.
+
+            if (!this.battleState.inProgress && !this.battleSelect.active) {
+                if (this.battleTab === "item_gacha") {
+                    this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                    this.ctx.font = 'bold 20px Arial';
+                    this.ctx.fillText("GACHA ITEMS", panel.x + 40, panel.y + 90);
+                    this.ctx.font = '12px Arial';
+                    this.ctx.fillText("Spend tickets to pull battle items", panel.x + 40, panel.y + 118);
+
+                    const slider = this.getBattleGachaSliderRect();
+                    const tickets = this.dataManager.data.tickets || 0;
+                    const minValue = tickets > 0 ? 1 : 0;
+                    const maxValue = Math.max(1, tickets);
+                    if (tickets === 0) this.gachaSpend = 0;
+
+                    this.ctx.strokeStyle = `rgb(${cBorder.join(',')})`;
+                    this.ctx.lineWidth = 2;
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(slider.x, slider.y + slider.h / 2);
+                    this.ctx.lineTo(slider.x + slider.w, slider.y + slider.h / 2);
+                    this.ctx.stroke();
+
+                    const pct = maxValue === minValue ? 0 : (this.gachaSpend - minValue) / (maxValue - minValue);
+                    const knobX = slider.x + slider.w * Math.max(0, Math.min(1, pct));
+                    this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                    this.ctx.beginPath();
+                    this.ctx.arc(knobX, slider.y + slider.h / 2, 8, 0, Math.PI * 2);
+                    this.ctx.fill();
+
+                    this.ctx.font = '12px Arial';
+                    this.ctx.textAlign = 'left';
+                    this.ctx.fillText(`Spend: ${this.gachaSpend}`, slider.x, slider.y + 18);
+                    this.ctx.textAlign = 'right';
+                    this.ctx.fillText(`Max: ${tickets}`, slider.x + slider.w, slider.y + 18);
+                    this.ctx.textAlign = 'left';
+                } else if (this.battleTab === "items") {
+                    this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                    this.ctx.font = 'bold 20px Arial';
+                    this.ctx.fillText("GACHA ITEMS", panel.x + 40, panel.y + 90);
+                    this.ctx.font = '12px Arial';
+                    this.ctx.fillText("Spend tickets to pull battle items", panel.x + 40, panel.y + 118);
+
+                    this.ctx.font = 'bold 14px Arial';
+                    this.ctx.fillText("MERGE ITEMS", panel.x + 40, panel.y + 160);
+                    this.ctx.font = '12px Arial';
+                    this.ctx.fillText("Spend tickets to power item merges (1 ticket = 1 value)", panel.x + 40, panel.y + 180);
+
+                    const mergeSlider = this.getBattleItemMergeSliderRect();
+                    const tickets = this.dataManager.data.tickets || 0;
+                    const mergeMinValue = 0;
+                    const mergeMaxValue = Math.max(0, tickets);
+                    if (tickets === 0) this.itemMergeSpend = 0;
+
+                    this.ctx.strokeStyle = `rgb(${cBorder.join(',')})`;
+                    this.ctx.lineWidth = 2;
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(mergeSlider.x, mergeSlider.y + mergeSlider.h / 2);
+                    this.ctx.lineTo(mergeSlider.x + mergeSlider.w, mergeSlider.y + mergeSlider.h / 2);
+                    this.ctx.stroke();
+
+                    const mergePct = mergeMaxValue === mergeMinValue ? 0 : (this.itemMergeSpend - mergeMinValue) / (mergeMaxValue - mergeMinValue);
+                    const mergeKnobX = mergeSlider.x + mergeSlider.w * Math.max(0, Math.min(1, mergePct));
+                    this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                    this.ctx.beginPath();
+                    this.ctx.arc(mergeKnobX, mergeSlider.y + mergeSlider.h / 2, 8, 0, Math.PI * 2);
+                    this.ctx.fill();
+
+                    this.ctx.font = '12px Arial';
+                    this.ctx.textAlign = 'left';
+                    this.ctx.fillText(`Spend: ${this.itemMergeSpend}`, mergeSlider.x, mergeSlider.y + 18);
+                    this.ctx.textAlign = 'right';
+                    this.ctx.fillText(`Max: ${tickets}`, mergeSlider.x + mergeSlider.w, mergeSlider.y + 18);
+                    this.ctx.textAlign = 'left';
+
+                    const listX = panel.x + 40;
+                    const listY = panel.y + 230;
+                    const rowH = 34;
+                    const owned = this.gachaItems.slice(-6).reverse();
+                    this.ctx.font = '12px Arial';
+                    for (let i = 0; i < owned.length; i++) {
+                        const item = owned[i];
+                        const meta = GACHA_ITEMS[item.type];
+                        const label = meta ? `${meta.name} Lv.${item.level || 1}` : item.type;
+                        if (this.selectedGachaItemIds.has(item.id)) {
+                            const highlightX = listX - 6;
+                            const highlightY = listY + i * rowH - 2;
+                            const highlightW = panel.x + panel.w - 160 - highlightX;
+                            this.ctx.fillStyle = 'rgba(0, 120, 255, 0.2)';
+                            this.ctx.fillRect(highlightX, highlightY, Math.max(0, highlightW), rowH);
+                            this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                        }
+                        this.ctx.fillText(label, listX, listY + i * rowH);
+                        const sub = this.getItemEffectSummary(item.type, item.level || 1);
+                        if (sub) {
+                            this.ctx.font = '10px Arial';
+                            this.ctx.fillText(sub, listX, listY + i * rowH + 12);
+                            this.ctx.font = '12px Arial';
+                        }
+                        const sellValue = this.getGachaItemSellValue(item.type, item.level || 1);
+                        this.ctx.textAlign = 'right';
+                        this.ctx.fillText(`Sell: ${sellValue}`, panel.x + panel.w - 10, listY + i * rowH);
+                        this.ctx.textAlign = 'left';
+                    }
+                }
+            }
+
+            const now = Date.now();
+            const inProgress = this.battleState.inProgress;
+            if (inProgress) {
+                const progress = Math.min(1, (now - this.battleState.turnStartedAt) / this.battleState.turnDuration);
+                const wobble = Math.sin(now / 120) * 4;
+
+                const allyX = panel.x + 80;
+                const enemyX = panel.x + panel.w - 200;
+                const baseY = panel.y + 120;
+                const spacingY = 90;
+                const playerStats = this.getBattlePlayerStats();
+                const activeSkin = this.battleState.awaitingTarget ? (this.battleState.pendingSkinIndex ?? -1) : -1;
+                const anim = this.battleState.attackAnim || {active: false};
+                let animT = 0;
+                if (anim.active) {
+                    animT = Math.min(1, (now - anim.startAt) / (anim.duration || 380));
+                    if (animT >= 1) {
+                        anim.active = false;
+                    }
+                }
+
+                const getUnitPos = (type, idx) => {
+                    const y = baseY + idx * spacingY + (type === "enemy" ? -wobble : wobble);
+                    const x = type === "enemy" ? enemyX : allyX;
+                    return {x, y};
+                };
+
+                const getAnimOffset = (type, idx) => {
+                    if (!anim.active || anim.attackerType !== type || anim.attackerIndex !== idx) return {x: 0, y: 0};
+                    const attacker = getUnitPos(anim.attackerType, anim.attackerIndex);
+                    const defender = getUnitPos(anim.defenderType, anim.defenderIndex);
+                    const dx = defender.x - attacker.x;
+                    const dy = defender.y - attacker.y;
+                    const ease = animT < 0.5 ? animT / 0.5 : (1 - animT) / 0.5;
+                    const factor = 0.25 * Math.max(0, Math.min(1, ease));
+                    return {x: dx * factor, y: dy * factor};
+                };
+
+                for (let i = 0; i < 3; i++) {
+                    const slot = this.battleTeam[i];
+                    const skin = SKINS[slot.skinKey] || SKINS.default;
+                    const maxHp = this.battleState.playerMaxHealths?.[i] ?? playerStats[i].maxHealth;
+                    const hp = this.battleState.playerHealths?.[i] ?? maxHp;
+                    if (hp <= 0) continue;
+
+                    const offset = getAnimOffset("player", i);
+                    const y = baseY + i * spacingY + wobble + offset.y;
+                    const x = allyX + offset.x;
+                    this.ctx.fillStyle = `rgb(${skin.color.join(',')})`;
+                    this.ctx.fillRect(x, y, 50, 50);
+                    this.ctx.strokeStyle = 'rgb(0,0,0)';
+                    this.ctx.lineWidth = 2;
+                    this.ctx.strokeRect(x, y, 50, 50);
+                    if (i === activeSkin) {
+                        this.ctx.strokeStyle = 'rgb(255, 215, 0)';
+                        this.ctx.lineWidth = 3;
+                        this.ctx.strokeRect(x - 3, y - 3, 56, 56);
+                    }
+
+                    const barW = 70;
+                    const barH = 6;
+                    this.ctx.fillStyle = 'rgb(80, 80, 80)';
+                    this.ctx.fillRect(x - 10, y - 12, barW, barH);
+                    this.ctx.fillStyle = 'rgb(0, 200, 0)';
+                    this.ctx.fillRect(x - 10, y - 12, barW * Math.max(0, Math.min(1, hp / maxHp)), barH);
+                }
+
+                const enemies = this.battleState.enemies.length ? this.battleState.enemies : Array(3).fill().map(() => ({color: [200, 80, 80], maxHealth: 1}));
+                for (let i = 0; i < 3; i++) {
+                    const enemy = enemies[i] || enemies[0];
+                    const offset = getAnimOffset("enemy", i);
+                    const y = baseY + i * spacingY - wobble + offset.y;
+                    const x = enemyX + offset.x;
+                    const maxHp = this.battleState.enemyMaxHealths?.[i] ?? enemy.maxHealth ?? 1;
+                    const hp = this.battleState.enemyHealths?.[i] ?? maxHp;
+                    if (hp <= 0) continue;
+                    const enemyColor = enemy.color || [200, 80, 80];
+                    this.ctx.fillStyle = `rgb(${enemyColor.map(v => Math.floor(v)).join(',')})`;
+                    this.ctx.fillRect(x, y, 50, 50);
+                    this.ctx.strokeStyle = 'rgb(0,0,0)';
+                    this.ctx.lineWidth = 2;
+                    this.ctx.strokeRect(x, y, 50, 50);
+                    const barW = 70;
+                    const barH = 6;
+                    this.ctx.fillStyle = 'rgb(80, 80, 80)';
+                    this.ctx.fillRect(x - 10, y - 12, barW, barH);
+                    this.ctx.fillStyle = 'rgb(200, 60, 60)';
+                    this.ctx.fillRect(x - 10, y - 12, barW * Math.max(0, Math.min(1, hp / maxHp)), barH);
+                }
+
+                if (anim.active && animT > 0.2 && animT < 0.8) {
+                    const aPos = getUnitPos(anim.attackerType, anim.attackerIndex);
+                    const dPos = getUnitPos(anim.defenderType, anim.defenderIndex);
+                    const aOffset = getAnimOffset(anim.attackerType, anim.attackerIndex);
+                    const dOffset = {x: 0, y: 0};
+                    const ax = aPos.x + aOffset.x + 25;
+                    const ay = aPos.y + aOffset.y + 25;
+                    const dx = dPos.x + dOffset.x + 25;
+                    const dy = dPos.y + dOffset.y + 25;
+                    const negBg = cBg.map(v => 255 - v);
+                    this.ctx.strokeStyle = `rgba(${negBg.join(',')}, 0.8)`;
+                    this.ctx.lineWidth = 2;
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(ax, ay);
+                    this.ctx.lineTo(dx, dy);
+                    this.ctx.stroke();
+                }
+
+                this.ctx.fillStyle = 'rgb(80, 80, 80)';
+                this.ctx.fillRect(panel.x + 80, panel.y + panel.h - 70, panel.w - 160, 8);
+                this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                this.ctx.fillRect(panel.x + 80, panel.y + panel.h - 70, (panel.w - 160) * progress, 8);
+                this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                this.ctx.font = 'bold 14px Arial';
+                this.ctx.textAlign = 'center';
+                if (this.battleState.awaitingTarget && !this.battleState.autoTarget) {
+                    this.ctx.fillText("Select an enemy target", WINDOW_WIDTH / 2, panel.y + panel.h - 50);
+                } else {
+                    this.ctx.fillText("Next attack...", WINDOW_WIDTH / 2, panel.y + panel.h - 50);
+                }
+                this.ctx.textAlign = 'left';
+            }
+
+            if (this.battleResult) {
+                this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                this.ctx.font = 'bold 16px Arial';
+                this.ctx.textAlign = 'center';
+                this.ctx.textBaseline = 'middle';
+                this.ctx.fillText(this.battleResult, WINDOW_WIDTH / 2, panel.y + panel.h - 40);
+                this.ctx.textAlign = 'left';
+            }
+
+            for (const btn of this.battleButtons) {
+                if (this.battleState.inProgress && !["LEAVE", "AUTO TARGET: ON", "AUTO TARGET: OFF"].includes(btn.text)) continue;
+                if (btn.style === "outline") {
+                    btn.textColor = cText;
+                    btn.color = cBg;
+                }
+                btn.draw(this.ctx, 14);
+            }
+
+            if (this.gachaAnim.active && !this.battleState.inProgress && this.battleTab === "item_gacha") {
+                this.drawGachaAnimation(panel, {
+                    bg: cBg,
+                    floor: cFloor,
+                    text: cText,
+                    border: cBorder
+                });
+            }
         } else if (this.state === STATE_GAMEOVER) {
             this.drawTextCentered("GAME OVER", 80, cLava, -50);
             this.drawTextCentered(`Level Reached: ${this.level}`, 18, cText, 20);
@@ -2617,6 +3500,8 @@ Press SPACE or ESC to go back`;
                 this.gameStartTime = Date.now();
                 this.initLevel();
             }
+        } else if (this.state === STATE_BATTLE) {
+            this.updateBattle();
         }
 
         this.updateGachaAnimation();
@@ -2627,4 +3512,3 @@ Press SPACE or ESC to go back`;
 }
 
 // Start the game
-new Game();

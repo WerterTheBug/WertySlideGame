@@ -37,10 +37,23 @@ class Button {
         ctx.strokeRect(this.rect.x, this.rect.y, this.rect.w, this.rect.h);
        
         ctx.fillStyle = `rgb(${this.textColor.join(',')})`;
-        ctx.font = `bold ${fontSize}px Arial`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(this.text, this.rect.x + this.rect.w / 2, this.rect.y + this.rect.h / 2);
+        const text = String(this.text ?? "");
+        const lines = text.split('\n');
+        if (lines.length === 1) {
+            ctx.font = `bold ${fontSize}px Arial`;
+            ctx.fillText(lines[0], this.rect.x + this.rect.w / 2, this.rect.y + this.rect.h / 2);
+        } else {
+            const mainSize = fontSize;
+            const subSize = Math.max(10, fontSize - 4);
+            const totalH = mainSize + subSize;
+            let y = this.rect.y + this.rect.h / 2 - totalH / 2 + mainSize * 0.1;
+            ctx.font = `bold ${mainSize}px Arial`;
+            ctx.fillText(lines[0], this.rect.x + this.rect.w / 2, y);
+            ctx.font = `${subSize}px Arial`;
+            ctx.fillText(lines.slice(1).join(' '), this.rect.x + this.rect.w / 2, y + mainSize);
+        }
     }
 
     checkHover(x, y) {

@@ -11,6 +11,7 @@ const STATE_INFO = "info";
 const STATE_MISSIONS = "missions";
 const STATE_PLAYING = "playing";
 const STATE_GAMEOVER = "gameover";
+const STATE_BATTLE = "battle";
 
 const SKINS = {
     'default': {name: "Classic", color: [0, 0, 255], level_req: 0},
@@ -107,4 +108,14 @@ const LEVEL_SKINS = {
         name: "Luxury", cost: 10000, quirk: 'shimmer',
         colors: {bg: [40, 40, 40], wall: [255, 215, 0], floor: [30, 30, 30], text: [255, 215, 0], border: [255, 255, 255], lava: [255, 50, 50], end: [255, 255, 255]}
     }
+};
+
+const GACHA_ITEMS = {
+    charm_spark: {name: "Spark Charm", power: 3, attackMult: 1.1, healthMult: 0.9},
+    charm_guard: {name: "Guard Charm", power: 4, attackMult: 0.9, healthMult: 1.15},
+    rune_frost: {name: "Frost Rune", power: 6, attackMult: 0.95, healthMult: 1.1},
+    rune_blaze: {name: "Blaze Rune", power: 7, attackMult: 1.2, healthMult: 0.85},
+    relic_storm: {name: "Storm Relic", power: 10, attackMult: 1.25, healthMult: 0.8},
+    relic_void: {name: "Void Relic", power: 11, attackMult: 1.15, healthMult: 0.9},
+    totem_legend: {name: "Legend Totem", power: 15, attackMult: 1.35, healthMult: 0.95}
 };

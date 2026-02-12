@@ -22,7 +22,10 @@ class DataManager {
             unlocked_trails: ["none"],
             unlocked_anims: ["none"],
             unlocked_level_skins: ["default"],
-            unlocked_gacha_skins: []
+            unlocked_gacha_skins: [],
+            gacha_items: [],
+            battle_team: [],
+            battle_level: 1
         };
         this.load();
     }
@@ -43,7 +46,10 @@ class DataManager {
             unlocked_trails: ["none"],
             unlocked_anims: ["none"],
             unlocked_level_skins: ["default"],
-            unlocked_gacha_skins: []
+            unlocked_gacha_skins: [],
+            gacha_items: [],
+            battle_team: [],
+            battle_level: 1
         };
         this.resetNotice = reason;
         this.save();
