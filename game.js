@@ -85,6 +85,9 @@ class Game {
         };
         this.gachaItems = Array.isArray(this.dataManager.data.gacha_items) ? this.dataManager.data.gacha_items : [];
         this.selectedGachaItemIds = new Set();
+        this.gachaItemScrollOffset = 0;
+        this.battleGachaItemScrollOffset = 0;
+        this.boostScrollOffset = 0;
         this.battleTeam = Array.isArray(this.dataManager.data.battle_team) ? this.dataManager.data.battle_team : [];
         this.battleResult = "";
         this.battleLevel = this.dataManager.data.battle_level || 1;
@@ -253,6 +256,26 @@ class Game {
             this.activeSlider = null;
         });
 
+        this.canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const delta = Math.sign(e.deltaY);
+            
+            if (this.state === STATE_MISSIONS) {
+                if (this.missionsTab === "gacha_items") {
+                    const maxScroll = Math.max(0, this.gachaItems.length - 6);
+                    this.gachaItemScrollOffset = Math.max(0, Math.min(maxScroll, this.gachaItemScrollOffset + delta));
+                } else if (this.missionsTab === "inventory") {
+                    const maxScroll = Math.max(0, this.boosts.length - 6);
+                    this.boostScrollOffset = Math.max(0, Math.min(maxScroll, this.boostScrollOffset + delta));
+                }
+            } else if (this.state === STATE_BATTLE) {
+                if (this.battleTab === "items") {
+                    const maxScroll = Math.max(0, this.gachaItems.length - 6);
+                    this.battleGachaItemScrollOffset = Math.max(0, Math.min(maxScroll, this.battleGachaItemScrollOffset + delta));
+                }
+            }
+        }, { passive: false });
+
         document.addEventListener('keydown', (e) => {
             if (this.state === STATE_MENU && e.key === ' ') {
                 this.startGame();
@@ -387,8 +410,11 @@ class Game {
         const listX = panel.x + 40;
         const listY = panel.y + 350;
         const rowH = 34;
-        const items = this.gachaItems.slice(-6).reverse();
-        return {panel, listX, listY, rowH, items};
+        const totalItems = this.gachaItems.length;
+        const startIdx = Math.max(0, totalItems - 6 - this.gachaItemScrollOffset);
+        const endIdx = Math.max(6, totalItems - this.gachaItemScrollOffset);
+        const items = this.gachaItems.slice(startIdx, endIdx).reverse();
+        return {panel, listX, listY, rowH, items, totalItems, canScrollUp: this.gachaItemScrollOffset > 0, canScrollDown: this.gachaItemScrollOffset < Math.max(0, totalItems - 6)};
     }
 
     getBattleGachaItemListLayout() {
@@ -396,8 +422,11 @@ class Game {
         const listX = panel.x + 40;
         const listY = panel.y + 230;
         const rowH = 34;
-        const items = this.gachaItems.slice(-6).reverse();
-        return {panel, listX, listY, rowH, items};
+        const totalItems = this.gachaItems.length;
+        const startIdx = Math.max(0, totalItems - 6 - this.battleGachaItemScrollOffset);
+        const endIdx = Math.max(6, totalItems - this.battleGachaItemScrollOffset);
+        const items = this.gachaItems.slice(startIdx, endIdx).reverse();
+        return {panel, listX, listY, rowH, items, totalItems, canScrollUp: this.battleGachaItemScrollOffset > 0, canScrollDown: this.battleGachaItemScrollOffset < Math.max(0, totalItems - 6)};
     }
 
     getBoostListLayout() {
@@ -406,8 +435,11 @@ class Game {
         const listY = panel.y + 230;
         const rowH = 52;
         const listW = panel.w - 40;
-        const boosts = this.boosts.slice(0, 6);
-        return {panel, listX, listY, rowH, listW, boosts};
+        const totalBoosts = this.boosts.length;
+        const startIdx = this.boostScrollOffset;
+        const endIdx = Math.min(totalBoosts, this.boostScrollOffset + 6);
+        const boosts = this.boosts.slice(startIdx, endIdx);
+        return {panel, listX, listY, rowH, listW, boosts, totalBoosts, canScrollUp: this.boostScrollOffset > 0, canScrollDown: this.boostScrollOffset < Math.max(0, totalBoosts - 6)};
     }
 
     toggleGachaItemSelection(itemId) {
@@ -658,7 +690,7 @@ class Game {
     rollGachaItem(spend) {
         const pool = Object.keys(GACHA_ITEMS);
         const itemKey = pool[Math.floor(Math.random() * pool.length)] || "charm_spark";
-        const level = this.getGachaBoostLevel(spend);
+        const level = this.getGachaItemLevel(spend);
         return {
             id: `${Date.now()}_${Math.floor(Math.random() * 100000)}`,
             type: itemKey,
@@ -666,11 +698,21 @@ class Game {
         };
     }
 
+    getGachaItemLevel(spend) {
+        const {probs, levelCount} = this.getGachaLevelDistribution(spend, null);
+        const roll = Math.random();
+        let acc = 0;
+        for (let i = 0; i < probs.length; i++) {
+            acc += probs[i];
+            if (roll <= acc) return i + 1;
+        }
+        return levelCount || 1;
+    }
+
     getExpectedGachaItemValue(spend) {
         const items = Object.values(GACHA_ITEMS);
         const avgPower = items.length ? items.reduce((sum, item) => sum + item.power, 0) / items.length : 1;
-        const probs = this.getGachaBoostProbabilities(spend);
-        const expectedLevel = probs.reduce((sum, p, idx) => sum + p * (idx + 1), 0);
+        const {expectedLevel} = this.getGachaLevelDistribution(spend, null);
         return Math.max(1, avgPower * expectedLevel);
     }
 
@@ -968,26 +1010,41 @@ class Game {
         return Math.max(2, Math.round(3 + (level || 1) * 4));
     }
 
-    getGachaBoostProbabilities(spend) {
-        const power = Math.min(1, Math.log10(spend + 1) / 2);
-        const thresholds = [0.55, 0.82, 0.94, 0.985];
-        const bonus = power * 0.25;
-        const adj = thresholds.map(t => Math.max(0.15, t - bonus));
+    getGachaLevelDistribution(spend, maxLevel) {
+        const safeSpend = Math.max(0, spend);
+        const expectedLevel = 1 + Math.log10(safeSpend + 1) * 3;
+        const cap = Number.isFinite(maxLevel) ? Math.max(1, Math.floor(maxLevel)) : null;
+        const sigma = Math.max(0.9, expectedLevel * 0.35);
+        let levelCount = cap;
 
-        const p1 = Math.max(0, Math.min(1, adj[0]));
-        const p2 = Math.max(0, Math.min(1, adj[1] - adj[0]));
-        const p3 = Math.max(0, Math.min(1, adj[2] - adj[1]));
-        const p4 = Math.max(0, Math.min(1, adj[3] - adj[2]));
-        const p5 = Math.max(0, 1 - adj[3]);
-        return [p1, p2, p3, p4, p5];
+        if (!levelCount) {
+            const padded = Math.ceil(expectedLevel + sigma * 3);
+            levelCount = Math.max(5, padded);
+        }
+
+        const weights = [];
+        let total = 0;
+        for (let lvl = 1; lvl <= levelCount; lvl++) {
+            const dist = lvl - expectedLevel;
+            const weight = Math.exp(-(dist * dist) / (2 * sigma * sigma));
+            weights.push(weight);
+            total += weight;
+        }
+        const probs = weights.map(w => (total > 0 ? w / total : 1 / levelCount));
+
+        const cappedExpected = cap ? Math.min(expectedLevel, cap) : expectedLevel;
+        return {expectedLevel: cappedExpected, probs, levelCount};
+    }
+
+    getGachaBoostProbabilities(spend, maxLevel = null) {
+        return this.getGachaLevelDistribution(spend, maxLevel).probs;
     }
 
     getExpectedGachaBoostValue(spend) {
-        const probs = this.getGachaBoostProbabilities(spend);
-        const levels = [1, 2, 3, 4, 5];
+        const {probs, levelCount} = this.getGachaLevelDistribution(spend, null);
         let expected = 0;
-        for (let i = 0; i < levels.length; i++) {
-            expected += probs[i] * this.getBoostSellValue(levels[i]);
+        for (let lvl = 1; lvl <= levelCount; lvl++) {
+            expected += probs[lvl - 1] * this.getBoostSellValue(lvl);
         }
         return expected;
     }
@@ -1013,28 +1070,21 @@ class Game {
     }
 
     getGachaBoostLevel(spend) {
-        const power = Math.min(1, Math.log10(spend + 1) / 2);
+        const {probs} = this.getGachaLevelDistribution(spend, null);
         const roll = Math.random();
-        const thresholds = [0.55, 0.82, 0.94, 0.985];
-        const bonus = power * 0.25;
-        const adj = thresholds.map(t => Math.max(0.15, t - bonus));
-        let baseLevel = 1;
-        if (roll < adj[0]) baseLevel = 1;
-        else if (roll < adj[1]) baseLevel = 2;
-        else if (roll < adj[2]) baseLevel = 3;
-        else if (roll < adj[3]) baseLevel = 4;
-        else baseLevel = 5;
-
-        const extra = Math.max(0, Math.floor(Math.log10(spend + 1)) - 1);
-        const minLevel = 1 + Math.floor(Math.log10(spend + 1));
-        return Math.max(baseLevel + extra, minLevel);
+        let acc = 0;
+        for (let i = 0; i < probs.length; i++) {
+            acc += probs[i];
+            if (roll <= acc) return i + 1;
+        }
+        return probs.length;
     }
 
     addBoost({type, level}) {
         this.boosts.push({
             id: `${Date.now()}_${Math.floor(Math.random() * 100000)}`,
             type,
-            level: Math.max(1, Math.min(level || 1, 10))
+            level: Math.max(1, level || 1)
         });
     }
 
@@ -1084,7 +1134,7 @@ class Game {
                 this.boosts.push({
                     id: finalBoost.id || `${Date.now()}_${Math.floor(Math.random() * 100000)}`,
                     type,
-                    level: Math.max(1, Math.min(finalBoost.level || 1, 10))
+                    level: Math.max(1, finalBoost.level || 1)
                 });
             }
         }
@@ -1100,10 +1150,12 @@ class Game {
     }
 
     rollMergedBoostLevel(levels, bonusValue = 0) {
+        const minLevel = Math.max(1, ...levels.map(lvl => Math.max(1, lvl)));
         const totalValue = levels.reduce((sum, lvl) => sum + Math.pow(2, Math.max(1, lvl)), 0) + Math.max(0, bonusValue);
         let remaining = totalValue;
-        let achieved = 0;
-        for (let lvl = 1; lvl <= 10; lvl++) {
+        let achieved = minLevel;
+        const maxLoop = Math.max(10, minLevel + 5);
+        for (let lvl = 1; lvl <= maxLoop; lvl++) {
             const cost = Math.random() * Math.pow(2, lvl);
             if (cost <= remaining) {
                 remaining -= cost;
@@ -1112,7 +1164,7 @@ class Game {
                 break;
             }
         }
-        return Math.max(1, achieved);
+        return Math.max(minLevel, achieved);
     }
 
     startMergeAnimation() {
@@ -1413,6 +1465,8 @@ class Game {
                     this.missionsTab = key;
                     this.selectedGachaItemIds.clear();
                     this.selectedBoostIds.clear();
+                    this.gachaItemScrollOffset = 0;
+                    this.boostScrollOffset = 0;
                     this.createMissionUI();
                 }, style));
             tabX += 130;
@@ -1473,7 +1527,7 @@ class Game {
                 mergeItemsAction, "outline"));
 
             const listY = panel.y + 350;
-            const owned = this.gachaItems.slice(-6).reverse();
+            const {items: owned} = this.getGachaItemListLayout();
             for (let i = 0; i < owned.length; i++) {
                 const item = owned[i];
                 const btnY = listY + i * 26;
@@ -1492,10 +1546,11 @@ class Game {
             this.missionButtons.push(new Button("MERGE", panel.x + panel.w - 120, panel.y + 20, 90, 40,
                 mergeAction, mergeStyle));
 
-            const listCount = Math.min(this.boosts.length, 6);
+            const {boosts: boostList} = this.getBoostListLayout();
+            const listCount = Math.min(boostList.length, 6);
             if (!this.mergeAnim.active) {
                 for (let i = 0; i < listCount; i++) {
-                    const boost = this.boosts[i];
+                    const boost = boostList[i];
                     const isEquipped = this.equippedBoosts.includes(boost.id);
                     const rowY = listStartY + i * rowH;
                     const equipText = isEquipped ? "UNEQUIP" : "EQUIP";
@@ -2733,7 +2788,20 @@ class Game {
                 const listX = panel.x + 40;
                 const listY = panel.y + 350;
                 const rowH = 34;
-                const owned = this.gachaItems.slice(-6).reverse();
+                const {items: owned, canScrollUp, canScrollDown} = this.getGachaItemListLayout();
+                
+                // Draw scroll indicators
+                if (canScrollUp) {
+                    this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                    this.ctx.font = '16px Arial';
+                    this.ctx.fillText('▲ Scroll up', listX + 250, listY - 25);
+                }
+                if (canScrollDown) {
+                    this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                    this.ctx.font = '16px Arial';
+                    this.ctx.fillText('▼ Scroll down', listX + 250, listY + 6 * rowH + 10);
+                }
+                
                 this.ctx.font = '12px Arial';
                 for (let i = 0; i < owned.length; i++) {
                     const item = owned[i];
@@ -2805,7 +2873,21 @@ class Game {
                 const rowH = 52;
                 const listX = panel.x + 20;
                 const listW = panel.w - 40;
-                const listCount = Math.min(this.boosts.length, 6);
+                const {boosts: boostList, canScrollUp, canScrollDown} = this.getBoostListLayout();
+                const listCount = Math.min(boostList.length, 6);
+                
+                // Draw scroll indicators
+                if (canScrollUp) {
+                    this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                    this.ctx.font = '14px Arial';
+                    this.ctx.fillText('▲ Scroll up', listX + listW - 100, listStartY - 10);
+                }
+                if (canScrollDown) {
+                    this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                    this.ctx.font = '14px Arial';
+                    this.ctx.fillText('▼ Scroll down', listX + listW - 120, listStartY + 6 * rowH + 10);
+                }
+                
                 const now = Date.now();
                 let animT = 1;
                 if (this.mergeAnim.active) {
@@ -2836,7 +2918,7 @@ class Game {
 
                 if (!this.mergeAnim.active) {
                     for (let i = 0; i < listCount; i++) {
-                        const boost = this.boosts[i];
+                        const boost = boostList[i];
                         const rowY = listStartY + i * rowH;
                         drawBoostRow(boost, rowY);
                     }
@@ -2846,7 +2928,7 @@ class Game {
                     const mergedSourceIds = new Set(this.mergeAnim.mergeSteps.flatMap(step => step.fromIds));
 
                     for (let i = 0; i < listCount; i++) {
-                        const boost = this.boosts[i];
+                        const boost = boostList[i];
                         if (mergedResultIds.has(boost.id)) continue;
                         const rowY = listStartY + i * rowH;
                         drawBoostRow(boost, rowY);
@@ -2874,7 +2956,7 @@ class Game {
                         const alpha = Math.min(1, (animT - 0.9) / 0.1);
                         this.ctx.globalAlpha = alpha;
                         for (let i = 0; i < listCount; i++) {
-                            const boost = this.boosts[i];
+                            const boost = boostList[i];
                             if (!mergedResultIds.has(boost.id)) continue;
                             const rowY = listStartY + i * rowH;
                             drawBoostRow(boost, rowY);
@@ -3033,7 +3115,20 @@ class Game {
                     const listX = panel.x + 40;
                     const listY = panel.y + 230;
                     const rowH = 34;
-                    const owned = this.gachaItems.slice(-6).reverse();
+                    const {items: owned, canScrollUp, canScrollDown} = this.getBattleGachaItemListLayout();
+                    
+                    // Draw scroll indicators
+                    if (canScrollUp) {
+                        this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                        this.ctx.font = '14px Arial';
+                        this.ctx.fillText('▲ Scroll up', listX + 250, listY - 15);
+                    }
+                    if (canScrollDown) {
+                        this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+                        this.ctx.font = '14px Arial';
+                        this.ctx.fillText('▼ Scroll down', listX + 250, listY + 6 * rowH + 5);
+                    }
+                    
                     this.ctx.font = '12px Arial';
                     for (let i = 0; i < owned.length; i++) {
                         const item = owned[i];

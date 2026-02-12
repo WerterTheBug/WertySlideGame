@@ -113,6 +113,7 @@ const LEVEL_SKINS = {
 const GACHA_ITEMS = {
     charm_spark: {name: "Spark Charm", power: 3, attackMult: 1.1, healthMult: 0.9},
     charm_guard: {name: "Guard Charm", power: 4, attackMult: 0.9, healthMult: 1.15},
+    charm_lightning: {name: "Lightning Charm", power: 0, attackMult: 0.7, healthMult: 0.7, speedPerLevel: 0.03},
     rune_frost: {name: "Frost Rune", power: 6, attackMult: 0.95, healthMult: 1.1},
     rune_blaze: {name: "Blaze Rune", power: 7, attackMult: 1.2, healthMult: 0.85},
     relic_storm: {name: "Storm Relic", power: 10, attackMult: 1.25, healthMult: 0.8},

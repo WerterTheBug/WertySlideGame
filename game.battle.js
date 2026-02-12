@@ -144,6 +144,7 @@
         let healthMult = 1;
         let attackBonus = 0;
         let healthBonus = 0;
+        let speedMult = 1;
         for (const itemRef of (slot.items || [])) {
             const item = this.getBattleItemByRef(itemRef);
             if (!item) continue;
@@ -154,8 +155,13 @@
             if (Number.isFinite(meta.healthMult)) healthMult *= meta.healthMult;
             if (Number.isFinite(meta.attackBonus)) attackBonus += meta.attackBonus * level;
             if (Number.isFinite(meta.healthBonus)) healthBonus += meta.healthBonus * level;
+            if (Number.isFinite(meta.speedPerLevel)) {
+                // Asymptotic approach to 400% cap: 4.0 * level / (level + 10)
+                const speedBoost = 4.0 * level / (level + 10);
+                speedMult *= (1 + speedBoost);
+            }
         }
-        return {attackMult, healthMult, attackBonus, healthBonus};
+        return {attackMult, healthMult, attackBonus, healthBonus, speedMult};
     };
 
     Game.prototype.getItemEffectSummary = function (itemKey, level = 1) {
@@ -174,7 +180,24 @@
         if (Number.isFinite(meta.healthBonus) && meta.healthBonus !== 0) {
             parts.push(`HP +${Math.round(meta.healthBonus * level)}`);
         }
+        if (Number.isFinite(meta.speedPerLevel) && meta.speedPerLevel !== 0) {
+            // Asymptotic approach to 400% cap
+            const speedBoost = 4.0 * level / (level + 10);
+            const pct = Math.round(speedBoost * 100);
+            parts.push(`Speed +${pct}%`);
+        }
         return parts.join(" ");
+    };
+
+    Game.prototype.getTeamBattleSpeedMultiplier = function () {
+        let total = 0;
+        let count = 0;
+        for (const slot of this.battleTeam) {
+            const mods = this.getBattleItemModifiers(slot);
+            total += Math.max(1, mods.speedMult || 1);
+            count += 1;
+        }
+        return count ? total / count : 1;
     };
 
     Game.prototype.getBattlePlayerStats = function () {
@@ -186,7 +209,7 @@
             const mods = this.getBattleItemModifiers(slot);
             const attack = Math.max(1, Math.round((baseAttack + mods.attackBonus) * mods.attackMult));
             const maxHealth = Math.max(1, Math.round((baseHealth + mods.healthBonus) * mods.healthMult));
-            return {attack, maxHealth, skinPower, itemPower};
+            return {attack, maxHealth, skinPower, itemPower, speedMult: mods.speedMult || 1};
         });
     };
 
@@ -212,10 +235,13 @@
     };
 
     Game.prototype.startAttackAnimation = function (attackerType, attackerIndex, defenderType, defenderIndex) {
+        const speedMult = this.battleState?.speedMult || 1;
+        const baseDuration = 380;
+        const scaledDuration = Math.max(140, Math.round(baseDuration / Math.max(1, speedMult)));
         this.battleState.attackAnim = {
             active: true,
             startAt: Date.now(),
-            duration: 380,
+            duration: scaledDuration,
             attackerType,
             attackerIndex,
             defenderType,
@@ -248,6 +274,10 @@
             return {maxHealth, health: maxHealth, damage, color};
         });
 
+        const baseTurnDuration = 900;
+        const speedMult = this.getTeamBattleSpeedMultiplier();
+        const adjustedTurnDuration = Math.max(250, Math.round(baseTurnDuration / Math.max(1, speedMult)));
+
         this.battleState = {
             inProgress: true,
             startAt: now,
@@ -258,7 +288,8 @@
             nextBattleAt: 0,
             turnIndex: 0,
             turnStartedAt: now,
-            turnDuration: this.battleState.turnDuration || 900,
+            turnDuration: adjustedTurnDuration,
+            speedMult,
             playerHealths,
             playerMaxHealths: maxHealths,
             enemyHealths: enemies.map(e => e.health),
@@ -345,6 +376,7 @@
 
     Game.prototype.finishBattle = function (victory) {
         const now = Date.now();
+        const speedMult = this.battleState?.speedMult || 1;
         if (victory) {
             const reward = Math.max(1, Math.floor(this.battleLevel / 6) + Math.floor(Math.random() * 3));
             this.dataManager.data.tickets = (this.dataManager.data.tickets || 0) + reward;
@@ -353,7 +385,7 @@
             this.battleLevel += 1;
             this.saveBattleLevel();
             this.battleState.pendingContinue = true;
-            this.battleState.nextBattleAt = now + 700;
+            this.battleState.nextBattleAt = now + Math.max(200, Math.round(700 / Math.max(1, speedMult)));
         } else {
             this.battleResult = "Defeat... try again";
             this.battleLevel = 1;
@@ -457,6 +489,7 @@
                     () => {
                         this.battleTab = key;
                         this.selectedGachaItemIds.clear();
+                        this.battleGachaItemScrollOffset = 0;
                         this.createBattleUI();
                     }, style));
                 tabX += 140;
@@ -547,7 +580,7 @@
                     mergeItemsAction, "outline"));
 
                 const listY = panel.y + 230;
-                const owned = this.gachaItems.slice(-6).reverse();
+                const {items: owned} = this.getBattleGachaItemListLayout();
                 for (let i = 0; i < owned.length; i++) {
                     const item = owned[i];
                     const btnY = listY + i * 26;
