@@ -49,7 +49,8 @@ class DataManager {
             unlocked_gacha_skins: [],
             gacha_items: [],
             battle_team: [],
-            battle_level: 1
+            battle_level: 1,
+            mobile_mode: false
         };
         this.resetNotice = reason;
         this.save();

@@ -23,6 +23,9 @@ class Game {
         if (!Number.isFinite(this.dataManager.data.battle_level)) {
             this.dataManager.data.battle_level = 1;
         }
+        if (typeof this.dataManager.data.mobile_mode !== 'boolean') {
+            this.dataManager.data.mobile_mode = false;
+        }
        
         this.baseCols = 21;
         this.baseRows = 15;
@@ -59,6 +62,10 @@ class Game {
         this.shopButtons = [];
         this.missionButtons = [];
         this.battleButtons = [];
+        this.settingsButtons = [];
+        this.mobileButtons = [];
+        this.pauseButton = null;
+        this.exitButton = null;
         this.missions = [];
         this.missionTemplates = this.buildMissionTemplates();
         this.missionsTab = "missions";
@@ -166,18 +173,26 @@ class Game {
                 this.updateGachaSliderFromX(x, this.activeSlider);
             }
            
-            if ([STATE_MENU, STATE_SHOP, STATE_INFO, STATE_MISSIONS, STATE_GAMEOVER, STATE_BATTLE].includes(this.state)) {
+            if ([STATE_MENU, STATE_SHOP, STATE_INFO, STATE_MISSIONS, STATE_GAMEOVER, STATE_BATTLE, STATE_SETTINGS].includes(this.state)) {
                 if (this.state === STATE_MISSIONS && this.gachaAnim.active) return;
                 const btnList = this.state === STATE_MENU
                     ? this.menuButtons
                     : (this.state === STATE_INFO
                         ? this.infoButtons
-                        : (this.state === STATE_MISSIONS
-                            ? this.missionButtons
-                            : (this.state === STATE_BATTLE
-                                ? this.battleButtons
-                                : this.shopButtons)));
+                        : (this.state === STATE_SETTINGS
+                            ? this.settingsButtons
+                            : (this.state === STATE_MISSIONS
+                                ? this.missionButtons
+                                : (this.state === STATE_BATTLE
+                                    ? this.battleButtons
+                                    : this.shopButtons))));
                 btnList.forEach(btn => btn.checkHover(x, y));
+            }
+            
+            if (this.state === STATE_PLAYING && this.dataManager.data.mobile_mode) {
+                this.mobileButtons.forEach(btn => btn.checkHover(x, y));
+                if (this.pauseButton) this.pauseButton.checkHover(x, y);
+                if (this.isPaused && this.exitButton) this.exitButton.checkHover(x, y);
             }
         });
 
@@ -186,16 +201,18 @@ class Game {
             const x = e.clientX - rect.left;
             const y = e.clientY - rect.top;
            
-            if ([STATE_MENU, STATE_SHOP, STATE_INFO, STATE_MISSIONS, STATE_GAMEOVER, STATE_BATTLE].includes(this.state)) {
+            if ([STATE_MENU, STATE_SHOP, STATE_INFO, STATE_MISSIONS, STATE_GAMEOVER, STATE_BATTLE, STATE_SETTINGS].includes(this.state)) {
                 const btnList = this.state === STATE_MENU
                     ? this.menuButtons
                     : (this.state === STATE_INFO
                         ? this.infoButtons
-                        : (this.state === STATE_MISSIONS
-                            ? this.missionButtons
-                            : (this.state === STATE_BATTLE
-                                ? this.battleButtons
-                                : this.shopButtons)));
+                        : (this.state === STATE_SETTINGS
+                            ? this.settingsButtons
+                            : (this.state === STATE_MISSIONS
+                                ? this.missionButtons
+                                : (this.state === STATE_BATTLE
+                                    ? this.battleButtons
+                                    : this.shopButtons))));
                 if (this.state === STATE_BATTLE && this.battleState.inProgress) {
                     btnList.filter(btn => ["LEAVE", "AUTO TARGET: ON", "AUTO TARGET: OFF"].includes(btn.text))
                         .forEach(btn => btn.checkClick(x, y));
@@ -210,6 +227,12 @@ class Game {
                 this.handleBattleListClick(x, y);
             } else if (this.state === STATE_BATTLE && this.battleState.inProgress) {
                 this.handleBattleFightClick(x, y);
+            } else if (this.state === STATE_PLAYING && this.dataManager.data.mobile_mode) {
+                if (!this.isPaused || this.practice_mode) {
+                    this.mobileButtons.forEach(btn => btn.checkClick(x, y));
+                }
+                if (this.isPaused && this.exitButton) this.exitButton.checkClick(x, y);
+                if (this.pauseButton) this.pauseButton.checkClick(x, y);
             }
         });
 
@@ -285,6 +308,8 @@ class Game {
             } else if (this.state === STATE_MISSIONS && (e.key === ' ' || e.key === 'Escape')) {
                 this.state = STATE_MENU;
                 this.clearPracticeGhostTrace();
+            } else if (this.state === STATE_SETTINGS && (e.key === ' ' || e.key === 'Escape')) {
+                this.state = STATE_MENU;
             } else if (this.state === STATE_GAMEOVER && e.key === ' ') {
                 this.state = STATE_MENU;
                 this.clearPracticeGhostTrace();
@@ -311,22 +336,7 @@ class Game {
 
                 if (dr !== 0 || dc !== 0) {
                     e.preventDefault();
-                    this.hasStartedMoving = true;
-                    this.currentMoveVelocity = this.dataManager.data.equipped_anim === 'heavy' ? 5 : this.moveSpeed;
-                    this.moveStartPos = [...this.playerPixelPos];
-
-                    const [targetR, targetC] = this.getTargetSlidePos(dr, dc);
-                    if (targetR !== this.playerGridPos[0] || targetC !== this.playerGridPos[1]) {
-                        this.playerGridPos = [targetR, targetC];
-                        this.targetPixelPos = [targetC * this.tileW, targetR * this.tileH];
-                        this.isMoving = true;
-                        if (this.pauseStartedAt) {
-                            const pausedMs = Date.now() - this.pauseStartedAt;
-                            this.lavaFrozenUntil += pausedMs;
-                            this.pauseStartedAt = null;
-                        }
-                        this.lastMoveDir = [dr, dc];
-                    }
+                    this.move(dr, dc);
                 }
             } else if (this.state === STATE_PLAYING && this.isPaused && this.practice_mode && !this.isMoving) {
                 let dr = 0, dc = 0;
@@ -337,17 +347,7 @@ class Game {
 
                 if (dr !== 0 || dc !== 0) {
                     e.preventDefault();
-                    this.currentMoveVelocity = this.dataManager.data.equipped_anim === 'heavy' ? 5 : this.moveSpeed;
-                    this.moveStartPos = [...this.playerPixelPos];
-                    this._appendPracticeGhostPointFromPixel(this.moveStartPos);
-
-                    const [targetR, targetC] = this.getTargetSlidePos(dr, dc);
-                    if (targetR !== this.playerGridPos[0] || targetC !== this.playerGridPos[1]) {
-                        this.playerGridPos = [targetR, targetC];
-                        this.targetPixelPos = [targetC * this.tileW, targetR * this.tileH];
-                        this.isMoving = true;
-                        this.lastMoveDir = [dr, dc];
-                    }
+                    this.move(dr, dc);
                 }
             }
         });
@@ -375,6 +375,45 @@ class Game {
                 const pausedMs = Date.now() - this.pauseStartedAt;
                 this.lavaFrozenUntil += pausedMs;
                 this.pauseStartedAt = null;
+            }
+        }
+    }
+
+    move(dr, dc) {
+        if (this.state !== STATE_PLAYING || this.isMoving) return;
+        
+        if (this.isPaused) {
+            // Practice mode paused movement
+            if (!this.practice_mode) return;
+            
+            this.currentMoveVelocity = this.dataManager.data.equipped_anim === 'heavy' ? 5 : this.moveSpeed;
+            this.moveStartPos = [...this.playerPixelPos];
+            this._appendPracticeGhostPointFromPixel(this.moveStartPos);
+
+            const [targetR, targetC] = this.getTargetSlidePos(dr, dc);
+            if (targetR !== this.playerGridPos[0] || targetC !== this.playerGridPos[1]) {
+                this.playerGridPos = [targetR, targetC];
+                this.targetPixelPos = [targetC * this.tileW, targetR * this.tileH];
+                this.isMoving = true;
+                this.lastMoveDir = [dr, dc];
+            }
+        } else {
+            // Normal movement
+            this.hasStartedMoving = true;
+            this.currentMoveVelocity = this.dataManager.data.equipped_anim === 'heavy' ? 5 : this.moveSpeed;
+            this.moveStartPos = [...this.playerPixelPos];
+
+            const [targetR, targetC] = this.getTargetSlidePos(dr, dc);
+            if (targetR !== this.playerGridPos[0] || targetC !== this.playerGridPos[1]) {
+                this.playerGridPos = [targetR, targetC];
+                this.targetPixelPos = [targetC * this.tileW, targetR * this.tileH];
+                this.isMoving = true;
+                if (this.pauseStartedAt) {
+                    const pausedMs = Date.now() - this.pauseStartedAt;
+                    this.lavaFrozenUntil += pausedMs;
+                    this.pauseStartedAt = null;
+                }
+                this.lastMoveDir = [dr, dc];
             }
         }
     }
@@ -502,6 +541,7 @@ class Game {
         this.menuButtons = [
             new Button("🎟️", 20, 20, 48, 48, () => this.openMissions(), "outline"),
             new Button("🥊", 76, 20, 48, 48, () => this.openBattle(), "outline"),
+            new Button("⚙️", WINDOW_WIDTH - 68, 76, 48, 48, () => this.openSettings(), "outline"),
             new Button("START", cx, startY, btnW, btnH, () => this.startGame(), "primary"),
             new Button("PRACTICE", cx, startY + spacing, btnW, btnH, () => this.startPractice(), "red_black"),
             new Button("SHOP", cx, startY + spacing * 2, btnW, btnH, () => this.openShop(), "outline"),
@@ -513,11 +553,87 @@ class Game {
         ];
     }
 
+    createSettingsUI() {
+        this.settingsButtons = [];
+        const panel = {x: 100, y: 100, w: WINDOW_WIDTH - 200, h: WINDOW_HEIGHT - 200};
+        
+        this.settingsButtons.push(
+            new Button("BACK", panel.x + 20, panel.y + 20, 100, 40, () => { this.state = STATE_MENU; }, "outline")
+        );
+        
+        const mobileToggleY = panel.y + 100;
+        const toggleText = this.dataManager.data.mobile_mode ? "MOBILE MODE: ON" : "MOBILE MODE: OFF";
+        const toggleStyle = this.dataManager.data.mobile_mode ? "primary" : "outline";
+        this.settingsButtons.push(
+            new Button(toggleText, panel.x + 40, mobileToggleY, 300, 50, () => {
+                this.dataManager.data.mobile_mode = !this.dataManager.data.mobile_mode;
+                this.dataManager.save();
+                this.createSettingsUI();
+            }, toggleStyle)
+        );
+    }
+
+    openSettings() {
+        this.state = STATE_SETTINGS;
+        this.createSettingsUI();
+    }
+
+    createSettingsUI() {
+        this.settingsButtons = [];
+        const panel = {x: 100, y: 100, w: WINDOW_WIDTH - 200, h: WINDOW_HEIGHT - 200};
+        
+        this.settingsButtons.push(
+            new Button("BACK", panel.x + 20, panel.y + 20, 100, 40, () => { this.state = STATE_MENU; }, "outline")
+        );
+        
+        const mobileToggleY = panel.y + 100;
+        const toggleText = this.dataManager.data.mobile_mode ? "MOBILE MODE: ON" : "MOBILE MODE: OFF";
+        const toggleStyle = this.dataManager.data.mobile_mode ? "primary" : "outline";
+        this.settingsButtons.push(
+            new Button(toggleText, panel.x + 40, mobileToggleY, 300, 50, () => {
+                this.dataManager.data.mobile_mode = !this.dataManager.data.mobile_mode;
+                this.dataManager.save();
+                this.createSettingsUI();
+            }, toggleStyle)
+        );
+    }
+
+    openSettings() {
+        this.state = STATE_SETTINGS;
+        this.createSettingsUI();
+    }
+
+    createMobileButtons() {
+        this.mobileButtons = [];
+        const btnSize = 60;
+        const padding = 20;
+        const centerX = WINDOW_WIDTH / 2;
+        const bottomY = WINDOW_HEIGHT - btnSize - padding;
+        
+        this.mobileButtons.push(
+            new Button("⬆️", centerX - btnSize / 2, bottomY - btnSize - 10, btnSize, btnSize, () => this.move(-1, 0), "primary"),
+            new Button("⬇️", centerX - btnSize / 2, bottomY, btnSize, btnSize, () => this.move(1, 0), "primary"),
+            new Button("⬅️", centerX - btnSize - btnSize / 2 - 10, bottomY, btnSize, btnSize, () => this.move(0, -1), "primary"),
+            new Button("➡️", centerX + btnSize / 2 + 10, bottomY, btnSize, btnSize, () => this.move(0, 1), "primary")
+        );
+        
+        // Add pause/resume button
+        this.pauseButton = new Button("⏸️", 20, WINDOW_HEIGHT - btnSize - padding, btnSize, btnSize, () => this.togglePause(), "primary");
+        
+        // Add exit button (shown when paused)
+        this.exitButton = new Button("EXIT", 20, 20, 80, 40, () => {
+            this.isPaused = false;
+            this.state = STATE_MENU;
+            this.clearPracticeGhostTrace();
+        }, "danger");
+    }
+
     startGame() {
         this.level = 1;
         this.practice_mode = false;
         this.gameStartTime = Date.now();
         this.initLevel();
+        this.createMobileButtons();
         this.state = STATE_PLAYING;
     }
 
@@ -526,6 +642,7 @@ class Game {
         this.practice_mode = true;
         this.gameStartTime = Date.now();
         this.initLevel();
+        this.createMobileButtons();
         this.state = STATE_PLAYING;
     }
 
@@ -1598,6 +1715,7 @@ class Game {
     restartLevel() {
         this.practice_mode = true;
         this.gameStartTime = Date.now();
+        this.createMobileButtons();
         // Reset player to start without regenerating maze
         this.playerGridPos = [...this.mazeGen.start];
         const startX = this.playerGridPos[1] * this.tileW;
@@ -1623,6 +1741,7 @@ class Game {
         // Practice mode, regenerate fresh maze for same level
         this.practice_mode = true;
         this.gameStartTime = Date.now();
+        this.createMobileButtons();
         this.initLevel();
         this.state = STATE_PLAYING;
     }
@@ -2573,10 +2692,14 @@ class Game {
             this.ctx.textAlign = 'left';
 
             for (const btn of this.menuButtons) {
-                if (btn.text === "🎟️") {
+                if (btn.text === "🎟️" || btn.text === "🥊") {
                     btn.color = [20, 20, 20];
                     btn.hoverColor = [50, 50, 50];
                     btn.textColor = [220, 220, 220];
+                } else if (btn.text === "⚙️") {
+                    btn.color = [40, 40, 40];
+                    btn.hoverColor = [70, 70, 70];
+                    btn.textColor = [200, 200, 200];
                 } else if (btn.text === "INFO") {
                     btn.color = [60, 100, 40];
                     btn.hoverColor = [80, 130, 60];
@@ -2590,7 +2713,7 @@ class Game {
                 } else {
                     btn.textColor = [255, 200, 100];
                 }
-                const fontSize = btn.text === "🎟️" ? 24 : 18;
+                const fontSize = (btn.text === "🎟️" || btn.text === "🥊" || btn.text === "⚙️") ? 24 : 18;
                 btn.draw(this.ctx, fontSize);
             }
         } else if (this.state === STATE_SHOP) {
@@ -3340,6 +3463,32 @@ Press SPACE or ESC to go back`;
                 btn.textColor = [255, 255, 255];
                 btn.draw(this.ctx);
             }
+        } else if (this.state === STATE_SETTINGS) {
+            this.ctx.fillStyle = `rgb(${cBg.join(',')})`;
+            this.ctx.fillRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
+
+            const panel = {x: 100, y: 100, w: WINDOW_WIDTH - 200, h: WINDOW_HEIGHT - 200};
+            this.ctx.fillStyle = `rgb(${cBg.join(',')})`;
+            this.ctx.fillRect(panel.x, panel.y, panel.w, panel.h);
+            this.ctx.strokeStyle = `rgb(${cBorder.join(',')})`;
+            this.ctx.lineWidth = 3;
+            this.ctx.strokeRect(panel.x, panel.y, panel.w, panel.h);
+
+            this.drawTextCentered("SETTINGS", 40, cText, -200);
+            
+            this.ctx.fillStyle = `rgb(${cText.join(',')})`;
+            this.ctx.font = '14px Arial';
+            this.ctx.textAlign = 'left';
+            this.ctx.textBaseline = 'top';
+            this.ctx.fillText("Mobile Mode adds on-screen directional buttons during gameplay", panel.x + 40, panel.y + 160);
+
+            for (const btn of this.settingsButtons) {
+                if (btn.style === "outline") {
+                    btn.textColor = cText;
+                    btn.color = cBg;
+                }
+                btn.draw(this.ctx, 16);
+            }
         } else if (this.state === STATE_PLAYING) {
             for (let r = 0; r < this.mazeGen.rows; r++) {
                 for (let c = 0; c < this.mazeGen.cols; c++) {
@@ -3554,6 +3703,38 @@ Press SPACE or ESC to go back`;
                     this.drawTextCentered("PAUSED", 60, [200, 200, 200], 0);
                 }
                 this.drawTextCentered("ESC to exit", 16, [150, 150, 150], 100);
+            }
+            
+            // Draw mobile control buttons
+            if (this.dataManager.data.mobile_mode) {
+                // Draw directional buttons (only when not paused or in practice mode paused)
+                if (!this.isPaused || this.practice_mode) {
+                    for (const btn of this.mobileButtons) {
+                        btn.textColor = [255, 255, 255];
+                        btn.color = [60, 60, 60];
+                        btn.hoverColor = [90, 90, 90];
+                        btn.draw(this.ctx, 32);
+                    }
+                }
+                
+                // Draw pause/resume button
+                if (this.pauseButton) {
+                    if (this.isPaused) {
+                        this.pauseButton.text = "▶️"; // Play/Resume
+                    } else {
+                        this.pauseButton.text = "⏸️"; // Pause
+                    }
+                    this.pauseButton.textColor = [255, 255, 255];
+                    this.pauseButton.color = [80, 80, 80];
+                    this.pauseButton.hoverColor = [110, 110, 110];
+                    this.pauseButton.draw(this.ctx, 32);
+                }
+                
+                // Draw exit button when paused
+                if (this.isPaused && this.exitButton) {
+                    this.exitButton.textColor = [255, 255, 255];
+                    this.exitButton.draw(this.ctx, 14);
+                }
             }
         }
     }
