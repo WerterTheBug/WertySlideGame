@@ -13,6 +13,7 @@ const STATE_PLAYING = "playing";
 const STATE_GAMEOVER = "gameover";
 const STATE_BATTLE = "battle";
 const STATE_SETTINGS = "settings";
+const STATE_ANDRE = "andre";
 
 const SKINS = {
     'default': {name: "Classic", color: [0, 0, 255], level_req: 0},

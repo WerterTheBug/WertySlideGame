@@ -6,6 +6,7 @@ class Game {
     constructor() {
         this.canvas = document.getElementById('gameCanvas');
         this.ctx = this.canvas.getContext('2d');
+        this.sunderIframe = document.getElementById('sunderIframe');
        
         this.dataManager = new DataManager();
         if (this.dataManager.resetNotice) {
@@ -173,7 +174,7 @@ class Game {
                 this.updateGachaSliderFromX(x, this.activeSlider);
             }
            
-            if ([STATE_MENU, STATE_SHOP, STATE_INFO, STATE_MISSIONS, STATE_GAMEOVER, STATE_BATTLE, STATE_SETTINGS].includes(this.state)) {
+            if ([STATE_MENU, STATE_SHOP, STATE_INFO, STATE_MISSIONS, STATE_GAMEOVER, STATE_BATTLE, STATE_SETTINGS, STATE_ANDRE].includes(this.state)) {
                 if (this.state === STATE_MISSIONS && this.gachaAnim.active) return;
                 const btnList = this.state === STATE_MENU
                     ? this.menuButtons
@@ -181,11 +182,13 @@ class Game {
                         ? this.infoButtons
                         : (this.state === STATE_SETTINGS
                             ? this.settingsButtons
-                            : (this.state === STATE_MISSIONS
-                                ? this.missionButtons
-                                : (this.state === STATE_BATTLE
-                                    ? this.battleButtons
-                                    : this.shopButtons))));
+                            : (this.state === STATE_ANDRE
+                                ? this.andreButtons
+                                : (this.state === STATE_MISSIONS
+                                    ? this.missionButtons
+                                    : (this.state === STATE_BATTLE
+                                        ? this.battleButtons
+                                        : this.shopButtons)))));
                 btnList.forEach(btn => btn.checkHover(x, y));
             }
             
@@ -201,18 +204,20 @@ class Game {
             const x = e.clientX - rect.left;
             const y = e.clientY - rect.top;
            
-            if ([STATE_MENU, STATE_SHOP, STATE_INFO, STATE_MISSIONS, STATE_GAMEOVER, STATE_BATTLE, STATE_SETTINGS].includes(this.state)) {
+            if ([STATE_MENU, STATE_SHOP, STATE_INFO, STATE_MISSIONS, STATE_GAMEOVER, STATE_BATTLE, STATE_SETTINGS, STATE_ANDRE].includes(this.state)) {
                 const btnList = this.state === STATE_MENU
                     ? this.menuButtons
                     : (this.state === STATE_INFO
                         ? this.infoButtons
                         : (this.state === STATE_SETTINGS
                             ? this.settingsButtons
-                            : (this.state === STATE_MISSIONS
-                                ? this.missionButtons
-                                : (this.state === STATE_BATTLE
-                                    ? this.battleButtons
-                                    : this.shopButtons))));
+                            : (this.state === STATE_ANDRE
+                                ? this.andreButtons
+                                : (this.state === STATE_MISSIONS
+                                    ? this.missionButtons
+                                    : (this.state === STATE_BATTLE
+                                        ? this.battleButtons
+                                        : this.shopButtons)))));
                 if (this.state === STATE_BATTLE && this.battleState.inProgress) {
                     btnList.filter(btn => ["LEAVE", "AUTO TARGET: ON", "AUTO TARGET: OFF"].includes(btn.text))
                         .forEach(btn => btn.checkClick(x, y));
@@ -545,12 +550,64 @@ class Game {
             new Button("START", cx, startY, btnW, btnH, () => this.startGame(), "primary"),
             new Button("PRACTICE", cx, startY + spacing, btnW, btnH, () => this.startPractice(), "red_black"),
             new Button("SHOP", cx, startY + spacing * 2, btnW, btnH, () => this.openShop(), "outline"),
-            new Button("INFO", cx, startY + spacing * 3, btnW, btnH, () => { this.state = STATE_INFO; }, "outline")
+            new Button("INFO", cx, startY + spacing * 3, btnW, btnH, () => { this.state = STATE_INFO; }, "outline"),
+            new Button("ANDRE", cx, startY + spacing * 4, btnW, btnH, () => this.openAndre(), "outline")
         ];
         
         this.infoButtons = [
             new Button("BACK", WINDOW_WIDTH / 2 - 100, WINDOW_HEIGHT - 80, 200, 50, () => { this.state = STATE_MENU; this.clearPracticeGhostTrace(); }, "primary")
         ];
+    }
+
+    createAndreUI() {
+        const btnW = 200, btnH = 50;
+        const cx = WINDOW_WIDTH / 2 - btnW / 2;
+        const startY = 300;
+        const panel = {x: 100, y: 100, w: WINDOW_WIDTH - 200, h: WINDOW_HEIGHT - 200};
+        
+        this.andreButtons = [];
+        
+        if (!this.sunderIframeActive) {
+            this.andreButtons.push(
+                new Button("SUNDER", cx, startY, btnW, btnH, () => { 
+                    const canvasRect = this.canvas.getBoundingClientRect();
+                    this.sunderIframe.src = "https://shrimpsooup.github.io/sunder/";
+                    this.sunderIframe.style.display = "block";
+                    this.sunderIframe.style.left = (canvasRect.left + panel.x) + "px";
+                    this.sunderIframe.style.top = (canvasRect.top + panel.y) + "px";
+                    this.sunderIframe.style.width = panel.w + "px";
+                    this.sunderIframe.style.height = panel.h + "px";
+                    this.sunderIframeActive = true;
+                    this.createAndreUI();
+                }, "primary")
+            );
+        }
+        
+        this.andreButtons.push(
+            new Button("BACK", cx, WINDOW_HEIGHT - 80, btnW, btnH, () => { 
+                this.sunderIframe.style.display = "none";
+                this.sunderIframe.src = "";
+                this.sunderIframeActive = false;
+                this.state = STATE_MENU; 
+            }, "outline")
+        );
+        
+        if (this.sunderIframeActive) {
+            this.andreButtons.push(
+                new Button("CLOSE", WINDOW_WIDTH - 130, 20, 100, 40, () => {
+                    this.sunderIframe.style.display = "none";
+                    this.sunderIframe.src = "";
+                    this.sunderIframeActive = false;
+                    this.createAndreUI();
+                }, "danger")
+            );
+        }
+    }
+
+    openAndre() {
+        this.state = STATE_ANDRE;
+        this.sunderIframeActive = false;
+        this.createAndreUI();
     }
 
     createSettingsUI() {
@@ -3488,6 +3545,27 @@ Press SPACE or ESC to go back`;
                     btn.color = cBg;
                 }
                 btn.draw(this.ctx, 16);
+            }
+        } else if (this.state === STATE_ANDRE) {
+            this.ctx.fillStyle = `rgb(${cBg.join(',')})`;
+            this.ctx.fillRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
+
+            const panel = {x: 100, y: 100, w: WINDOW_WIDTH - 200, h: WINDOW_HEIGHT - 200};
+            this.ctx.fillStyle = `rgb(${cBg.join(',')})`;
+            this.ctx.fillRect(panel.x, panel.y, panel.w, panel.h);
+            this.ctx.strokeStyle = `rgb(${cBorder.join(',')})`;
+            this.ctx.lineWidth = 3;
+            this.ctx.strokeRect(panel.x, panel.y, panel.w, panel.h);
+
+            this.drawTextCentered("ANDRE", 40, cText, -240);
+            
+            for (const btn of this.andreButtons) {
+                if (btn.text === "BACK") {
+                    btn.textColor = [0, 0, 0];
+                } else {
+                    btn.textColor = [255, 255, 255];
+                }
+                btn.draw(this.ctx);
             }
         } else if (this.state === STATE_PLAYING) {
             for (let r = 0; r < this.mazeGen.rows; r++) {
